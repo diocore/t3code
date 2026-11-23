@@ -2624,3 +2624,217 @@ describe("AntigravityAdapterV2 session system prompt", () => {
       }).pipe(Effect.provide(layerSession)),
   );
 });
+
+describe("AntigravityAdapterV2 plan mode", () => {
+  it("extracts proposed plan markdown only from Antigravity brain implementation_plan.md", () => {
+    const profileDir = "/state/antigravity/instance-1";
+    const flavorWithProfile = makeAntigravityAcpAdapterFlavor({
+      instanceId: ProviderInstanceId.make("antigravity-plan-flavor"),
+      random: undefined as never,
+      fileSystem: undefined as never,
+      path: undefined as never,
+      host: undefined as never,
+      selfInvocation: undefined as never,
+      makeRuntime: () => Effect.die("not spawned in this test"),
+      withProcess: (_stop, task) => task,
+      defaultModel: Effect.undefined,
+      profileDirectory: profileDir,
+    });
+    const planPath = `${profileDir}/antigravity-acp/brain/conv-1/implementation_plan.md`;
+    assert.equal(
+      flavorWithProfile.extractProposedPlanMarkdown?.({
+        toolCallId: "call_1",
+        kind: "edit",
+        status: "completed",
+        data: {
+          rawInput: {
+            Path: planPath,
+            Content: "# Plan\n\n- Step 1\n",
+            ArtifactMetadata: { UserFacing: true, RequestFeedback: true, Summary: "Plan" },
+          },
+        },
+      }),
+      "# Plan\n\n- Step 1",
+    );
+    assert.isUndefined(
+      flavorWithProfile.extractProposedPlanMarkdown?.({
+        toolCallId: "call_2",
+        kind: "edit",
+        status: "completed",
+        data: {
+          rawInput: {
+            Path: `${profileDir}/antigravity-acp/brain/conv-1/task.md`,
+            Content: "- [ ] Task 1\n",
+          },
+        },
+      }),
+    );
+    assert.isUndefined(
+      flavorWithProfile.extractProposedPlanMarkdown?.({
+        toolCallId: "call_3",
+        kind: "edit",
+        status: "completed",
+        data: {
+          rawInput: {
+            Path: "/workspace/repo/implementation_plan.md",
+            Content: "# Repo file\n",
+          },
+        },
+      }),
+    );
+  });
+
+  it.effect(
+    "enters plan mode, projects implementation_plan.md as a proposed_plan, and exits to build mode",
+    () =>
+      Effect.gen(function* () {
+        const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const crypto = yield* SecureRandom.SecureRandom;
+        const mockAgentPath = yield* path.fromFileUrl(
+          new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+        );
+        const profileDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-ag-plan-" });
+        const planFile = path.join(
+          profileDir,
+          "antigravity-acp",
+          "brain",
+          "conv-1",
+          "implementation_plan.md",
+        );
+        let runtime: AcpSessionRuntime.AcpSessionRuntime["Service"] | undefined;
+        let sessionUpdateHandler:
+          | Parameters<AcpSessionRuntime.AcpSessionRuntime["Service"]["handleSessionUpdate"]>[0]
+          | undefined;
+        let emittedPlanToolCall = false;
+        const instanceId = ProviderInstanceId.make("antigravity-plan-mode-test");
+        const adapter = yield* makeAntigravityAdapterV2({
+          instanceId,
+          profileDirectory: profileDir,
+          selfInvocation: yield* resolveSelfInvocation(),
+          makeRuntime: (input) =>
+            makeAntigravityAcpRuntime({
+              ...input,
+              childProcessSpawner,
+              spawn: {
+                command: process.execPath,
+                args: [mockAgentPath],
+                cwd: input.cwd,
+                env: { T3_ACP_ANTIGRAVITY: "1" },
+              },
+            }).pipe(
+              Effect.provideService(SecureRandom.SecureRandom, crypto),
+              Effect.map((made) => {
+                runtime = made;
+                return {
+                  ...made,
+                  handleSessionUpdate: (handler) => {
+                    sessionUpdateHandler = handler;
+                    return made.handleSessionUpdate(handler);
+                  },
+                  prompt: (payload, promptOptions) =>
+                    Effect.gen(function* () {
+                      if (!emittedPlanToolCall && sessionUpdateHandler) {
+                        emittedPlanToolCall = true;
+                        yield* sessionUpdateHandler({
+                          sessionId: "mock-session-1",
+                          update: {
+                            sessionUpdate: "tool_call",
+                            toolCallId: "call_plan_1",
+                            kind: "edit",
+                            status: "completed",
+                            title: "File implementation_plan.md",
+                            rawInput: {
+                              Path: planFile,
+                              Content: "# Proposed Plan\n\n- Step 1\n",
+                              ArtifactMetadata: {
+                                UserFacing: true,
+                                RequestFeedback: true,
+                                Summary: "Plan",
+                              },
+                            },
+                          },
+                        });
+                      }
+                      return yield* made.prompt(payload, promptOptions);
+                    }),
+                };
+              }),
+            ),
+          withProcess: (_stop, task) => task,
+          defaultModel: Effect.undefined,
+        });
+        const threadId = ThreadId.make("thread-antigravity-plan-mode");
+        const modelSelection = { instanceId, model: "gemini-test-low" } as const;
+        const planPolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "approval-required",
+          interactionMode: "plan",
+          cwd: process.cwd(),
+        });
+        const session = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("provider-session-antigravity-plan-mode"),
+          modelSelection,
+          runtimePolicy: planPolicy,
+        });
+        assert.equal((yield* runtime!.getModeState)?.currentModeId, "plan");
+
+        const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
+        yield* session.events.pipe(
+          Stream.runForEach((event) => Queue.offer(events, event)),
+          Effect.forkScoped,
+        );
+        const providerThread = yield* session.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy: planPolicy,
+        });
+        yield* session.startTurn(
+          makeTurnInput({
+            threadId,
+            providerThread,
+            instanceId,
+            runtimePolicy: planPolicy,
+            modelSelection,
+            now: yield* DateTime.now,
+          }),
+        );
+        const turnEvents: Array<ProviderAdapter.ProviderAdapterV2Event> = [];
+        while (true) {
+          const event = yield* Queue.take(events);
+          turnEvents.push(event);
+          if (event.type === "turn.terminal") break;
+        }
+        const proposedPlan = turnEvents.find(
+          (event) => event.type === "plan.updated" && event.plan.kind === "proposed_plan",
+        );
+        assert.isDefined(proposedPlan);
+        if (proposedPlan?.type === "plan.updated" && proposedPlan.plan.kind === "proposed_plan") {
+          assert.equal(proposedPlan.plan.markdown, "# Proposed Plan\n\n- Step 1");
+        }
+
+        const defaultPolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          cwd: process.cwd(),
+        });
+        yield* session.startTurn(
+          makeTurnInput({
+            threadId,
+            providerThread,
+            instanceId,
+            runtimePolicy: defaultPolicy,
+            modelSelection,
+            ordinal: 1,
+            now: yield* DateTime.now,
+          }),
+        );
+        yield* Stream.fromQueue(events).pipe(
+          Stream.filter((event) => event.type === "turn.terminal"),
+          Stream.runHead,
+        );
+        assert.equal((yield* runtime!.getModeState)?.currentModeId, "default");
+      }).pipe(Effect.provide(layerSession), Effect.scoped),
+  );
+});

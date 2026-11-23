@@ -1,3 +1,5 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off
+import * as NodePath from "node:path";
 import type {
   ProviderApprovalOption,
   ProviderUserInputAnswers,
@@ -574,4 +576,52 @@ export function classifyAntigravitySubagentToolCall(
 export function antigravitySubagentOutput(toolCall: AcpToolCallState): string | undefined {
   const output = toolCall.data.rawOutput;
   return typeof output === "string" && output.trim() ? boundText(output.trim()) : undefined;
+}
+
+function isAntigravityImplementationPlanPath(
+  filePath: string | undefined,
+  profileDirectory: string | undefined,
+): boolean {
+  if (filePath === undefined) return false;
+  const trimmed = filePath.trim();
+  if (!trimmed) return false;
+  if (profileDirectory !== undefined) {
+    const brainRoot = NodePath.resolve(profileDirectory, "antigravity-acp", "brain");
+    const resolved = NodePath.resolve(trimmed);
+    const relative = NodePath.relative(brainRoot, resolved);
+    if (relative === "" || relative.startsWith("..") || NodePath.isAbsolute(relative)) {
+      return false;
+    }
+    return NodePath.basename(resolved) === "implementation_plan.md";
+  }
+  const normalized = trimmed.replaceAll("\\", "/");
+  return /(?:^|\/)antigravity-acp\/brain\/[^/]+\/implementation_plan\.md$/.test(normalized);
+}
+
+export function extractAntigravityProposedPlanMarkdown(
+  toolCall: AcpToolCallState,
+  profileDirectory?: string,
+): string | undefined {
+  const rawInput = Predicate.isObject(toolCall.data.rawInput) ? toolCall.data.rawInput : undefined;
+  const rawPath =
+    (typeof rawInput?.Path === "string" ? rawInput.Path : undefined) ??
+    (typeof rawInput?.path === "string" ? rawInput.path : undefined) ??
+    (typeof rawInput?.file_path === "string" ? rawInput.file_path : undefined);
+  const rawContent = typeof rawInput?.Content === "string" ? rawInput.Content.trim() : "";
+  if (rawContent.length > 0 && isAntigravityImplementationPlanPath(rawPath, profileDirectory)) {
+    return rawContent;
+  }
+
+  const content = toolCall.data.content;
+  if (Array.isArray(content)) {
+    for (const block of content) {
+      if (!Predicate.isObject(block) || block.type !== "diff") continue;
+      const diffPath = typeof block.path === "string" ? block.path : rawPath;
+      const newText = typeof block.newText === "string" ? block.newText.trim() : "";
+      if (newText.length > 0 && isAntigravityImplementationPlanPath(diffPath, profileDirectory)) {
+        return newText;
+      }
+    }
+  }
+  return undefined;
 }
