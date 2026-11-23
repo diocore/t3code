@@ -1,8 +1,10 @@
-import * as NodeHttp from "node:http";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientError from "effect/http/HttpClientError";
+import * as HttpClientResponse from "effect/http/HttpClientResponse";
 
-import { makeMarginStatsService } from "./MarginStatsService.ts";
+import { make } from "./MarginStatsService.ts";
 
 const SAMPLE_STATS = {
   since: "today",
@@ -36,82 +38,80 @@ const SAMPLE_STATS = {
   },
 };
 
-function startTestServer(handler: NodeHttp.RequestListener) {
-  return Effect.acquireRelease(
-    Effect.promise(
-      () =>
-        new Promise<{ url: string; server: NodeHttp.Server }>((resolve) => {
-          const server = NodeHttp.createServer(handler);
-          server.listen(0, "127.0.0.1", () => {
-            const address = server.address();
-            if (address && typeof address === "object") {
-              resolve({ url: `http://127.0.0.1:${address.port}`, server });
-            }
-          });
-        }),
-    ),
-    ({ server }) =>
-      Effect.promise(
-        () =>
-          new Promise<void>((resolve) => {
-            server.close(() => resolve());
-          }),
-      ),
-  );
-}
-
 describe("MarginStatsService", () => {
   it.effect("returns unconfigured when ANTHROPIC_BASE_URL is unset or first-party", () =>
     Effect.gen(function* () {
-      const unset = makeMarginStatsService({ getBaseUrl: () => undefined });
+      const client = HttpClient.make(() => Effect.die("must not call HTTP when unconfigured"));
+
+      const unset = yield* make({ getBaseUrl: () => undefined }).pipe(
+        Effect.provideService(HttpClient.HttpClient, client),
+      );
       assert.deepStrictEqual(yield* unset.readStats({}), { status: "unconfigured" });
 
-      const firstParty = makeMarginStatsService({ getBaseUrl: () => "https://api.anthropic.com" });
+      const firstParty = yield* make({ getBaseUrl: () => "https://api.anthropic.com" }).pipe(
+        Effect.provideService(HttpClient.HttpClient, client),
+      );
       assert.deepStrictEqual(yield* firstParty.readStats({}), { status: "unconfigured" });
     }),
   );
 
   it.effect("reads /stats from a running margin proxy with optional since parameter", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        let seenUrl: string | undefined;
-        const { url } = yield* startTestServer((req, res) => {
-          seenUrl = req.url;
-          res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify(SAMPLE_STATS));
-        });
+    Effect.gen(function* () {
+      let seenUrl: string | undefined;
+      const client = HttpClient.make((request) => {
+        seenUrl = request.url;
+        return Effect.succeed(HttpClientResponse.fromWeb(request, Response.json(SAMPLE_STATS)));
+      });
 
-        const service = makeMarginStatsService({ getBaseUrl: () => url });
-        const result = yield* service.readStats({ since: "today" });
+      const service = yield* make({ getBaseUrl: () => "http://127.0.0.1:8787" }).pipe(
+        Effect.provideService(HttpClient.HttpClient, client),
+      );
+      const result = yield* service.readStats({ since: "today" });
 
-        assert.strictEqual(seenUrl, "/stats?since=today");
-        assert.deepStrictEqual(result, {
-          status: "ready",
-          endpoint: url,
-          stats: SAMPLE_STATS,
-        });
-      }),
-    ),
+      assert.strictEqual(seenUrl, "http://127.0.0.1:8787/stats?since=today");
+      assert.deepStrictEqual(result, {
+        status: "ready",
+        endpoint: "http://127.0.0.1:8787",
+        stats: SAMPLE_STATS,
+      });
+    }),
   );
 
   it.effect("returns unconfigured when endpoint returns 404 (non-margin proxy)", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const { url } = yield* startTestServer((_req, res) => {
-          res.writeHead(404, { "content-type": "application/json" });
-          res.end(JSON.stringify({ error: "not found" }));
-        });
+    Effect.gen(function* () {
+      const client = HttpClient.make((request) =>
+        Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            new Response(JSON.stringify({ error: "not found" }), { status: 404 }),
+          ),
+        ),
+      );
 
-        const service = makeMarginStatsService({ getBaseUrl: () => url });
-        const result = yield* service.readStats({});
-        assert.deepStrictEqual(result, { status: "unconfigured" });
-      }),
-    ),
+      const service = yield* make({ getBaseUrl: () => "http://127.0.0.1:8787" }).pipe(
+        Effect.provideService(HttpClient.HttpClient, client),
+      );
+      const result = yield* service.readStats({});
+      assert.deepStrictEqual(result, { status: "unconfigured" });
+    }),
   );
 
   it.effect("returns unavailable when margin endpoint is unreachable", () =>
     Effect.gen(function* () {
-      const service = makeMarginStatsService({ getBaseUrl: () => "http://127.0.0.1:1" });
+      const client = HttpClient.make((request) =>
+        Effect.fail(
+          new HttpClientError.HttpClientError({
+            reason: new HttpClientError.TransportError({
+              request,
+              cause: new Error("ECONNREFUSED"),
+            }),
+          }),
+        ),
+      );
+
+      const service = yield* make({ getBaseUrl: () => "http://127.0.0.1:8787" }).pipe(
+        Effect.provideService(HttpClient.HttpClient, client),
+      );
       const result = yield* service.readStats({});
       assert.strictEqual(result.status, "unavailable");
     }),

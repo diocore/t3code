@@ -4,14 +4,16 @@ import {
   type MarginStatsResult,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientRequest from "effect/http/HttpClientRequest";
+import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as Layer from "effect/Layer";
-import * as Schema from "effect/Schema";
 
 import { customClaudeApiEndpointHost } from "../provider/Drivers/ClaudeSkills.ts";
 
-const REQUEST_TIMEOUT_MS = 2_500;
-const decodeMarginStatsPayload = Schema.decodeUnknownEffect(MarginStatsPayload);
+const REQUEST_TIMEOUT = Duration.millis(2_500);
 
 export class MarginStatsService extends Context.Service<
   MarginStatsService,
@@ -26,9 +28,10 @@ function resolveMarginEndpoint(rawBaseUrl: string | undefined): string | undefin
   return parsed?.origin;
 }
 
-export function makeMarginStatsService(options?: {
+export const make = Effect.fnUntraced(function* (options?: {
   readonly getBaseUrl?: () => string | undefined;
-}): MarginStatsService["Service"] {
+}) {
+  const httpClient = yield* HttpClient.HttpClient;
   const getBaseUrl = options?.getBaseUrl ?? (() => process.env.ANTHROPIC_BASE_URL);
 
   const readStats = Effect.fn("MarginStatsService.readStats")(function* (input: MarginStatsInput) {
@@ -42,55 +45,39 @@ export function makeMarginStatsService(options?: {
       url.searchParams.set("since", input.since.trim());
     }
 
-    const response = yield* Effect.tryPromise({
-      try: () => globalThis.fetch(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }),
-      catch: (cause) => cause,
-    }).pipe(
-      Effect.catch((cause) =>
-        Effect.succeed({
-          ok: false as const,
-          networkError: cause instanceof Error ? cause.message : String(cause),
-        }),
-      ),
-    );
+    const response = yield* httpClient
+      .execute(HttpClientRequest.get(url.toString()))
+      .pipe(Effect.timeout(REQUEST_TIMEOUT), Effect.result);
 
-    if ("networkError" in response) {
+    if (response._tag === "Failure") {
       return {
         status: "unavailable",
         endpoint,
-        message: response.networkError,
+        message: String(response.failure),
       } satisfies MarginStatsResult;
     }
 
-    if (!response.ok) {
-      if (response.status === 404 || response.status === 405) {
-        return { status: "unconfigured" } satisfies MarginStatsResult;
-      }
-      return {
-        status: "unavailable",
-        endpoint,
-        message: `HTTP ${response.status}`,
-      } satisfies MarginStatsResult;
-    }
-
-    const rawJson = yield* Effect.tryPromise({
-      try: () => response.json() as Promise<unknown>,
-      catch: () => null,
-    }).pipe(Effect.catch(() => Effect.succeed(null)));
-
-    if (rawJson === null) {
+    const res = response.success;
+    if (res.status === 404 || res.status === 405) {
       return { status: "unconfigured" } satisfies MarginStatsResult;
     }
+    if (res.status < 200 || res.status >= 300) {
+      return {
+        status: "unavailable",
+        endpoint,
+        message: `HTTP ${res.status}`,
+      } satisfies MarginStatsResult;
+    }
 
-    const parsed = yield* decodeMarginStatsPayload(rawJson).pipe(
+    const decoded = yield* HttpClientResponse.schemaBodyJson(MarginStatsPayload)(res).pipe(
       Effect.map((stats) => ({ status: "ready", endpoint, stats }) satisfies MarginStatsResult),
-      Effect.catch(() => Effect.succeed({ status: "unconfigured" } satisfies MarginStatsResult)),
+      Effect.orElseSucceed(() => ({ status: "unconfigured" }) satisfies MarginStatsResult),
     );
 
-    return parsed;
+    return decoded;
   });
 
   return MarginStatsService.of({ readStats });
-}
+});
 
-export const layer = Layer.sync(MarginStatsService, () => makeMarginStatsService());
+export const layer = Layer.effect(MarginStatsService, make());

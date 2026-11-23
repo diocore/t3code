@@ -4,6 +4,7 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeReadline from "node:readline";
+import type * as NodeStream from "node:stream";
 import {
   DEFAULT_SPEECH_POST_PROCESSING_PROMPT,
   type EnvironmentSpeechPostProcessingRequest,
@@ -118,7 +119,11 @@ type PendingWorkerReply = {
 };
 
 type WorkerHandle = {
-  readonly child: NodeChildProcess.ChildProcessWithoutNullStreams;
+  readonly child: NodeChildProcess.ChildProcessByStdio<
+    NodeStream.Writable,
+    NodeStream.Readable,
+    null
+  >;
   readonly queue: PendingWorkerReply[];
   readonly failAll: (reason: string) => void;
 };
