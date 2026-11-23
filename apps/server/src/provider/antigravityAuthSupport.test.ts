@@ -12,6 +12,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -75,6 +76,12 @@ describe("Antigravity process environment", () => {
       agy_cli_disable_auto_update: "0",
       BROWSER: "open-real-browser",
       browser: "another-real-browser",
+      PAGER: "less -R",
+      pager: "more",
+      GH_PAGER: "less",
+      gh_pager: "less -R",
+      GIT_PAGER: "less",
+      GIT_TERMINAL_PROMPT: "1",
       PYTHONUNBUFFERED: "0",
       ELECTRON_RUN_AS_NODE: "0",
       CHROME_CRASHPAD_PIPE_NAME: "\\\\.\\pipe\\crashpad_50144_ZUJNJELFHHXPBIRT",
@@ -104,6 +111,10 @@ describe("Antigravity process environment", () => {
         AGY_ACP_FORCE_FILE_STORAGE: "1",
         AGY_CLI_DISABLE_AUTO_UPDATE: "1",
         BROWSER: profile.browserCommand,
+        PAGER: "cat",
+        GH_PAGER: "cat",
+        GIT_PAGER: "cat",
+        GIT_TERMINAL_PROMPT: "0",
         PYTHONUNBUFFERED: "1",
         ELECTRON_RUN_AS_NODE: "1",
         TMPDIR: profile.tempDirectory,
@@ -182,6 +193,35 @@ describe("Antigravity process environment", () => {
     });
     expect(perRun.env?.TEMP).toBe(`${windowsProfile.tempDirectory}\\run-1`);
     expect(perRun.env?.TMP).toBe(`${windowsProfile.tempDirectory}\\run-1`);
+  });
+
+  it("appends --dangerously-skip-permissions only when requested", () => {
+    const baseInput = {
+      installation: { executablePath: "/usr/bin/agy" },
+      profile,
+      cwd: "/project",
+      baseEnv: { PATH: "/usr/bin" },
+    };
+    expect(buildAntigravityAcpSpawnInput(baseInput).args).toEqual([
+      "acp",
+      "--gemini-dir",
+      profile.geminiHome,
+      "--app-data-dir",
+      "antigravity-acp",
+    ]);
+    expect(
+      buildAntigravityAcpSpawnInput({ ...baseInput, shouldSkipPermissions: false }).args,
+    ).toEqual(["acp", "--gemini-dir", profile.geminiHome, "--app-data-dir", "antigravity-acp"]);
+    expect(
+      buildAntigravityAcpSpawnInput({ ...baseInput, shouldSkipPermissions: true }).args,
+    ).toEqual([
+      "acp",
+      "--gemini-dir",
+      profile.geminiHome,
+      "--app-data-dir",
+      "antigravity-acp",
+      "--dangerously-skip-permissions",
+    ]);
   });
 
   it.effect("keeps accounts separate even when instance IDs differ only by case", () =>
@@ -573,6 +613,46 @@ it.layer(NodeServices.layer)("Antigravity profile preparation", (it) => {
     }),
   );
 
+  it.effect.skipIf(!symlinksSupported || HostProcess.Platform.defaultValue() === "win32")(
+    "links /bin/zsh ahead of Nix zsh on macOS and guards nix-darwin /etc/zshenv",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const directory = yield* fs.makeTempDirectoryScoped();
+        const profile = yield* prepareAntigravityProfile({
+          profileDirectory: path.join(directory, "profile"),
+          userHome: path.join(directory, "home"),
+          runtimeExecutablePath: process.execPath,
+          platform: "darwin",
+          baseEnv: { PATH: "/etc/profiles/per-user/dev/bin:/usr/bin:/bin" },
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            exists: (candidate) =>
+              candidate === "/bin/zsh" ? Effect.succeed(true) : fs.exists(candidate),
+          }),
+        );
+        expect(profile.shellBinDirectory).toBe(path.join(profile.acpDirectory, "bin"));
+        expect(yield* fs.readLink(path.join(profile.acpDirectory, "bin", "zsh"))).toBe("/bin/zsh");
+
+        const env = buildAntigravityAcpSpawnInput({
+          installation: { executablePath: "/usr/bin/agy" },
+          profile,
+          cwd: directory,
+          baseEnv: { PATH: "/etc/profiles/per-user/dev/bin:/usr/bin:/bin" },
+        }).env;
+        expect(env?.PATH).toBe(
+          `${path.join(profile.acpDirectory, "bin")}:/etc/profiles/per-user/dev/bin:/usr/bin:/bin`,
+        );
+        expect(env?.__NIX_DARWIN_SET_ENVIRONMENT_DONE).toBe("1");
+        expect(env?.GH_PAGER).toBe("cat");
+        expect(env?.PAGER).toBe("cat");
+        expect(env?.GIT_PAGER).toBe("cat");
+        expect(env?.GIT_TERMINAL_PROMPT).toBe("0");
+      }),
+  );
+
   it.effect("runs the browser helper with installed Node in standalone builds", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -643,11 +723,23 @@ it.layer(NodeServices.layer)("Antigravity profile preparation", (it) => {
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
+        const warnings: Array<Logger.Options<unknown>> = [];
+        const loggerLayer = Logger.layer(
+          [
+            Logger.make((entry) => {
+              if (entry.logLevel === "Warn") warnings.push(entry);
+            }),
+          ],
+          { mergeWithExisting: false },
+        );
         const temporaryDirectory = yield* fs.makeTempDirectoryScoped();
         const userHome = path.join(temporaryDirectory, "home");
         const profileDirectory = path.join(temporaryDirectory, "profile");
         const configSkills = path.join(userHome, ".gemini", "config", "skills");
         const cliSkills = path.join(userHome, ".gemini", "antigravity-cli", "skills");
+        const prepare = prepareAntigravityProfile({ profileDirectory, userHome }).pipe(
+          Effect.provide(loggerLayer),
+        );
         const isLink = (link: string) =>
           fs.readLink(link).pipe(
             Effect.as(true),
@@ -655,7 +747,7 @@ it.layer(NodeServices.layer)("Antigravity profile preparation", (it) => {
           );
         yield* fs.makeDirectory(path.join(configSkills, "review"), { recursive: true });
 
-        yield* prepareAntigravityProfile({ profileDirectory, userHome });
+        yield* prepare;
         const configLink = path.join(profileDirectory, "config", "skills");
         const cliLink = path.join(profileDirectory, "antigravity-cli", "skills");
         expect(yield* fs.readLink(configLink)).toBe(configSkills);
@@ -667,25 +759,26 @@ it.layer(NodeServices.layer)("Antigravity profile preparation", (it) => {
 
         // The harness leaves an empty folder where the link was skipped.
         yield* fs.makeDirectory(cliLink, { recursive: true });
-        yield* prepareAntigravityProfile({ profileDirectory, userHome });
+        yield* prepare;
         expect((yield* fs.stat(cliLink)).type).toBe("Directory");
 
         yield* fs.makeDirectory(cliSkills, { recursive: true });
         yield* fs.remove(configLink);
         yield* fs.makeDirectory(path.join(configLink, "own-skill"), { recursive: true });
-        yield* prepareAntigravityProfile({ profileDirectory, userHome });
+        yield* prepare;
         expect(yield* fs.readLink(cliLink)).toBe(cliSkills);
         expect(yield* fs.exists(path.join(configLink, "own-skill"))).toBe(true);
         expect((yield* fs.stat(configLink)).type).toBe("Directory");
 
         yield* fs.remove(cliLink);
         yield* fs.symlink(path.join(temporaryDirectory, "elsewhere"), cliLink);
-        yield* prepareAntigravityProfile({ profileDirectory, userHome });
+        yield* prepare;
         expect(yield* fs.readLink(cliLink)).toBe(cliSkills);
 
         yield* fs.remove(cliSkills, { recursive: true });
-        yield* prepareAntigravityProfile({ profileDirectory, userHome });
+        yield* prepare;
         expect(yield* isLink(cliLink)).toBe(false);
+        expect(warnings).toEqual([]);
       }),
   );
 
@@ -695,10 +788,22 @@ it.layer(NodeServices.layer)("Antigravity profile preparation", (it) => {
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
+        const warnings: Array<Logger.Options<unknown>> = [];
+        const loggerLayer = Logger.layer(
+          [
+            Logger.make((entry) => {
+              if (entry.logLevel === "Warn") warnings.push(entry);
+            }),
+          ],
+          { mergeWithExisting: false },
+        );
         const temporaryDirectory = yield* fs.makeTempDirectoryScoped();
         const userHome = path.join(temporaryDirectory, "home");
         const profileDirectory = path.join(temporaryDirectory, "profile");
         const userGemini = path.join(userHome, ".gemini");
+        const prepare = prepareAntigravityProfile({ profileDirectory, userHome }).pipe(
+          Effect.provide(loggerLayer),
+        );
         yield* fs.makeDirectory(path.join(userGemini, "config"), { recursive: true });
         yield* fs.writeFileString(path.join(userGemini, "AGENTS.md"), "global agents rule");
         yield* fs.writeFileString(path.join(userGemini, "GEMINI.md"), "global gemini rule");
@@ -707,7 +812,7 @@ it.layer(NodeServices.layer)("Antigravity profile preparation", (it) => {
           JSON.stringify({ entries: [{ path: "/tmp/shared-skills" }] }),
         );
 
-        yield* prepareAntigravityProfile({ profileDirectory, userHome });
+        yield* prepare;
         expect(yield* fs.readLink(path.join(profileDirectory, "AGENTS.md"))).toBe(
           path.join(userGemini, "AGENTS.md"),
         );
@@ -722,12 +827,13 @@ it.layer(NodeServices.layer)("Antigravity profile preparation", (it) => {
         yield* fs.remove(path.join(userGemini, "config", "skills.json"));
         yield* fs.remove(path.join(profileDirectory, "GEMINI.md"));
         yield* fs.writeFileString(path.join(profileDirectory, "GEMINI.md"), "profile's own rule");
-        yield* prepareAntigravityProfile({ profileDirectory, userHome });
+        yield* prepare;
         expect(yield* fs.exists(path.join(profileDirectory, "AGENTS.md"))).toBe(false);
         expect(yield* fs.exists(path.join(profileDirectory, "config", "skills.json"))).toBe(false);
         expect(yield* fs.readFileString(path.join(profileDirectory, "GEMINI.md"))).toBe(
           "profile's own rule",
         );
+        expect(warnings).toEqual([]);
       }),
   );
 

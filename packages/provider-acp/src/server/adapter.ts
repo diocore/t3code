@@ -721,6 +721,10 @@ export interface AcpAdapterV2Flavor {
   readonly restartRuntimeAfterInterrupt?: boolean;
   /** Prompt failures after which the agent process keeps failing until replaced. */
   readonly restartRuntimeAfterPromptError?: (error: unknown) => boolean;
+  readonly restartRuntimeForPolicyChange?: (
+    launchedPolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
+    nextPolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
+  ) => boolean;
   readonly restartRuntimeOnEveryInterrupt?: boolean;
   readonly terminateRuntimeProcessGroupOnInterrupt?: boolean;
   readonly preserveRuntimeOnSettledInterrupt?: boolean;
@@ -2281,6 +2285,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         const clientPolicyGrants = makeAcpClientPolicyGrants();
         let latestRuntimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy =
           input.runtimePolicy;
+        let launchedRuntimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy =
+          input.runtimePolicy;
         const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
         const activeTurn = yield* Ref.make<ActiveAcpTurn | null>(null);
         // Keyed by the agent's steer id; an injection can arrive before its send returns.
@@ -2899,11 +2905,11 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             handleRuntimeTerminationAtGeneration(runtimeGeneration),
         ): AcpAdapterV2RuntimeInput => {
           return {
-            cwd: input.runtimePolicy.cwd ?? process.cwd(),
-            runtimePolicy: input.runtimePolicy,
-            ...(input.runtimePolicy.workspace === undefined
+            cwd: latestRuntimePolicy.cwd ?? process.cwd(),
+            runtimePolicy: latestRuntimePolicy,
+            ...(latestRuntimePolicy.workspace === undefined
               ? {}
-              : { extraRoots: input.runtimePolicy.workspace.extraRoots }),
+              : { extraRoots: latestRuntimePolicy.workspace.extraRoots }),
             mcpServers: mcpContext.servers,
             acpMcpServers: mcpContext.acpServers,
             httpMcpServers: mcpContext.httpServers,
@@ -7828,6 +7834,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           runtimeMcpBridge = yield* makeRuntimeMcpBridge(mcpContext, runtimeScope);
           const runtimeGeneration = yield* Ref.get(runtimeCallbackGeneration);
           openAgentRequests = new Set();
+          launchedRuntimePolicy = latestRuntimePolicy;
           runtime = yield* flavor
             .makeRuntime(
               makeRuntimeInput(runtimeGeneration, openAgentRequests, mcpContext, resumeSessionId),
@@ -7906,6 +7913,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           const startup = Effect.gen(function* () {
             const mcpContext = yield* readMcpContext(threadId);
             replacementMcpBridge = yield* makeRuntimeMcpBridge(mcpContext, replacementScope);
+            launchedRuntimePolicy = latestRuntimePolicy;
             const replacementRuntime = yield* flavor
               .makeRuntime(
                 makeRuntimeInput(
@@ -9549,11 +9557,26 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             // load/resume can invoke client methods; install the incoming policy before activation.
             latestRuntimePolicy = turnInput.runtimePolicy;
             const requestedSessionId = yield* nativeThreadId(driver, turnInput.providerThread);
-            const restartAfterInterrupt = yield* restartRuntimeAfterTeardownIfRequired(
-              turnInput.threadId,
-            );
+            const restartForPolicy =
+              flavor.restartRuntimeForPolicyChange?.(
+                launchedRuntimePolicy,
+                turnInput.runtimePolicy,
+              ) === true;
+            if (restartForPolicy) {
+              yield* startAcpRuntime(turnInput.threadId, requestedSessionId);
+              yield* Ref.set(runtimeRestartRequired, false);
+              yield* Ref.set(activeSessionId, null);
+              yield* Ref.set(activeSessionSetup, null);
+              yield* Ref.set(activeSelection, null);
+              yield* Ref.set(activeInteractionMode, null);
+            }
+            const restartAfterInterrupt = restartForPolicy
+              ? false
+              : yield* restartRuntimeAfterTeardownIfRequired(turnInput.threadId);
             const needsSessionActivation =
-              (yield* Ref.get(activeSessionId)) !== requestedSessionId || restartAfterInterrupt;
+              (yield* Ref.get(activeSessionId)) !== requestedSessionId ||
+              restartAfterInterrupt ||
+              restartForPolicy;
             if (needsSessionActivation) {
               const activated = yield* activateSession(requestedSessionId, turnInput.threadId);
               yield* Ref.set(activeSessionId, activated.sessionId);

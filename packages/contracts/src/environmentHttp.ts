@@ -69,6 +69,7 @@ import {
   EnvironmentSpeechPostProcessingRequest,
   EnvironmentSpeechPostProcessingResult,
   EnvironmentSpeechStatus,
+  EnvironmentSpeechSynthesizeRequest,
   EnvironmentSpeechTranscriptionResult,
 } from "./speech.ts";
 import { PeerLinkClientPairingCredential, PeerLinkClientPairingRequest } from "./peerLink.ts";
@@ -851,6 +852,11 @@ export class EnvironmentVoiceBodyLimit extends HttpApiMiddleware.Service<Environ
   { error: EnvironmentRequestInvalidError },
 ) {}
 
+export class EnvironmentVoiceSynthesizeBodyLimit extends HttpApiMiddleware.Service<EnvironmentVoiceSynthesizeBodyLimit>()(
+  "EnvironmentVoiceSynthesizeBodyLimit",
+  { error: EnvironmentRequestInvalidError },
+) {}
+
 export class EnvironmentVoiceHttpApi extends HttpApiGroup.make("voice")
   .add(
     HttpApiEndpoint.get("cloudKeys", "/api/voice/cloud/keys", {
@@ -991,6 +997,16 @@ export class EnvironmentVoiceHttpApi extends HttpApiGroup.make("voice")
       success: EnvironmentSpeechPostProcessingResult,
       error: EnvironmentScopedOperationErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("synthesize", "/api/voice/synthesize", {
+      headers: OptionalBearerHeaders,
+      payload: EnvironmentSpeechSynthesizeRequest,
+      success: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array({ contentType: "audio/wav" })),
+      error: [...EnvironmentScopedOperationErrors, EnvironmentRequestInvalidError],
+    })
+      .middleware(EnvironmentVoiceSynthesizeBodyLimit)
+      .middleware(EnvironmentAuthenticatedAuth),
   ) {}
 
 class EnvironmentConnectHttpApi extends HttpApiGroup.make("connect")

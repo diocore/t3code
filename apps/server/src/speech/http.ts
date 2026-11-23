@@ -8,6 +8,7 @@ import {
   EnvironmentHttpApi,
   type EnvironmentSpeechModels,
   EnvironmentVoiceBodyLimit,
+  EnvironmentVoiceSynthesizeBodyLimit,
   SPEECH_MAX_OPTIONS_BYTES,
   TextGenerationError,
 } from "@t3tools/contracts";
@@ -30,6 +31,7 @@ import * as CloudSpeech from "./CloudSpeech.ts";
 import * as SpeechService from "./SpeechService.ts";
 
 const MAX_TRANSCRIBE_BODY_BYTES = SpeechService.MAX_SPEECH_BYTES + SPEECH_MAX_OPTIONS_BYTES + 4;
+const MAX_SYNTHESIZE_BODY_BYTES = 1_500_000;
 const parseAudio = Option.liftThrowable(decodeSpeechPcmRequest);
 const isTextGenerationError = Schema.is(TextGenerationError);
 
@@ -42,6 +44,20 @@ const bodyLimit = Layer.succeed(EnvironmentVoiceBodyLimit, (effect) =>
       Effect.provideService(
         HttpServerRequest.MaxBodySize,
         ByteSize.bytes(MAX_TRANSCRIBE_BODY_BYTES),
+      ),
+    );
+  }),
+);
+
+const synthesizeBodyLimit = Layer.succeed(EnvironmentVoiceSynthesizeBodyLimit, (effect) =>
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    if (Number(request.headers["content-length"]) > MAX_SYNTHESIZE_BODY_BYTES)
+      return yield* failEnvironmentInvalidRequest("invalid_command");
+    return yield* effect.pipe(
+      Effect.provideService(
+        HttpServerRequest.MaxBodySize,
+        ByteSize.bytes(MAX_SYNTHESIZE_BODY_BYTES),
       ),
     );
   }),
@@ -246,6 +262,19 @@ export const speechHttpApiLayer = HttpApiBuilder.group(
               ),
             );
         }),
+      )
+      .handle(
+        "synthesize",
+        Effect.fn("environment.voice.synthesize")(function* (args) {
+          yield* guard(args.endpoint.name);
+          if (args.payload.text.trim().length === 0)
+            return yield* failEnvironmentInvalidRequest("invalid_command");
+          return yield* postProcessing.synthesize(args.payload).pipe(mapSpeechError);
+        }),
       );
   }),
-).pipe(Layer.provide(bodyLimit), Layer.provide(SpeechPostProcessing.layer));
+).pipe(
+  Layer.provide(bodyLimit),
+  Layer.provide(synthesizeBodyLimit),
+  Layer.provide(SpeechPostProcessing.layer),
+);
