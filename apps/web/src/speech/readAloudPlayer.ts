@@ -9,7 +9,7 @@ import { runEnvironmentSpeech } from "./runEnvironmentSpeech";
 
 export type ReadAloudSnapshot = {
   readonly activeMessageId: string | null;
-  readonly phase: "idle" | "loading" | "playing";
+  readonly phase: "idle" | "loading" | "ready" | "playing";
   readonly mode: SpeechReadAloudMode | null;
 };
 
@@ -107,6 +107,25 @@ export function stopReadAloud() {
   }
 }
 
+export function playReadyReadAloud() {
+  const audio = activeAudio;
+  if (!audio || currentSnapshot.phase !== "ready" || !currentSnapshot.mode) return;
+  emitSnapshot({
+    activeMessageId: currentSnapshot.activeMessageId,
+    phase: "playing",
+    mode: currentSnapshot.mode,
+  });
+  void audio.play().catch(() => {
+    if (activeAudio === audio) {
+      stopReadAloud();
+      toastManager.add({
+        type: "error",
+        title: m(msg("Could not play synthesized speech.")),
+      });
+    }
+  });
+}
+
 export function startReadAloud(input: {
   readonly messageId: string;
   readonly environmentId: EnvironmentId | null;
@@ -174,14 +193,21 @@ export function startReadAloud(input: {
         phase: "playing",
         mode: input.mode,
       });
-      void audio.play().catch(() => {
-        if (activeAudio === audio) {
-          stopReadAloud();
-          toastManager.add({
-            type: "error",
-            title: m(msg("Could not play synthesized speech.")),
+      void audio.play().catch((error: unknown) => {
+        if (activeAudio !== audio) return;
+        if (error instanceof DOMException && error.name === "NotAllowedError") {
+          emitSnapshot({
+            activeMessageId: input.messageId,
+            phase: "ready",
+            mode: input.mode,
           });
+          return;
         }
+        stopReadAloud();
+        toastManager.add({
+          type: "error",
+          title: m(msg("Could not play synthesized speech.")),
+        });
       });
     },
     () => {

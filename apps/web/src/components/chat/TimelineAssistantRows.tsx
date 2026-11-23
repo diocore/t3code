@@ -6,7 +6,14 @@ import { T, useGT, useMessages } from "gt-react";
 import { memo, use, useState, useSyncExternalStore } from "react";
 import { type ChatMessage, type TurnDiffSummary } from "../../types";
 import ChatMarkdown from "../ChatMarkdown";
-import { FileTextIcon, GitForkIcon, ReplyIcon, SquareIcon, Volume2Icon } from "lucide-react";
+import {
+  FileTextIcon,
+  GitForkIcon,
+  PlayIcon,
+  ReplyIcon,
+  SquareIcon,
+  Volume2Icon,
+} from "lucide-react";
 import { captureAssistantMessageOpening } from "~/lib/assistantTextSelection";
 import { responseContextRecord } from "~/lib/composerContextRecords";
 import { Button } from "../ui/button";
@@ -14,6 +21,7 @@ import { Menu, MenuItem, MenuItemLabel, MenuPopup, MenuTrigger } from "../ui/men
 import { Spinner } from "../ui/spinner";
 import {
   getReadAloudSnapshot,
+  playReadyReadAloud,
   startReadAloud,
   stopReadAloud,
   subscribeReadAloud,
@@ -402,6 +410,29 @@ function AssistantReadAloudButton({
   const text = copyState.text;
   const environmentId = ctx.threadRef?.environmentId ?? ctx.activeThreadEnvironmentId;
   const isActive = snapshot.activeMessageId === message.id && snapshot.phase !== "idle";
+
+  if (isActive && snapshot.phase === "ready") {
+    return (
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              type="button"
+              size="xs"
+              variant="ghost-muted"
+              onClick={playReadyReadAloud}
+              aria-label={gt("Play response")}
+            />
+          }
+        >
+          <PlayIcon className="size-3 text-primary" />
+        </TooltipTrigger>
+        <TooltipPopup side="top">
+          <T>Play response</T>
+        </TooltipPopup>
+      </Tooltip>
+    );
+  }
 
   if (isActive) {
     return (

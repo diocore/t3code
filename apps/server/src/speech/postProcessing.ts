@@ -117,9 +117,16 @@ type PendingWorkerReply = {
   readonly reject: (error: Error) => void;
 };
 
+type WorkerHandle = {
+  readonly child: NodeChildProcess.ChildProcessWithoutNullStreams;
+  readonly queue: PendingWorkerReply[];
+  readonly failAll: (reason: string) => void;
+};
+
+const SYNTHESIS_TIMEOUT_MS = 120_000;
+
 class OnDemandKokoroWorker {
-  private child: NodeChildProcess.ChildProcessWithoutNullStreams | null = null;
-  private queue: PendingWorkerReply[] = [];
+  private worker: WorkerHandle | null = null;
   private unloadTimer: ReturnType<typeof setTimeout> | null = null;
   private serial: Promise<void> = Promise.resolve();
 
@@ -146,20 +153,17 @@ class OnDemandKokoroWorker {
 
   stop() {
     this.clearTimer();
-    const running = this.child;
-    this.child = null;
+    const running = this.worker;
+    this.worker = null;
     if (running) {
-      running.kill("SIGTERM");
-    }
-    const pending = this.queue.splice(0);
-    for (const item of pending) {
-      item.reject(new Error("TTS worker stopped."));
+      running.child.kill("SIGTERM");
+      running.failAll("TTS worker stopped.");
     }
   }
 
-  private ensureProcess(modelPath: string, voicesPath: string) {
-    if (this.child && !this.child.killed && this.child.exitCode === null) {
-      return this.child;
+  private ensureProcess(modelPath: string, voicesPath: string): WorkerHandle {
+    if (this.worker && !this.worker.child.killed && this.worker.child.exitCode === null) {
+      return this.worker;
     }
     const child = NodeChildProcess.spawn(
       "uv",
@@ -177,11 +181,20 @@ class OnDemandKokoroWorker {
         modelPath,
         voicesPath,
       ],
-      { stdio: ["pipe", "pipe", "pipe"] },
+      { stdio: ["pipe", "pipe", "ignore"] },
     );
+    const queue: PendingWorkerReply[] = [];
+    const failAll = (reason: string) => {
+      if (this.worker === handle) this.worker = null;
+      const pending = queue.splice(0);
+      for (const item of pending) {
+        item.reject(new Error(reason));
+      }
+    };
+    const handle: WorkerHandle = { child, queue, failAll };
     const reader = NodeReadline.createInterface({ input: child.stdout });
     reader.on("line", (line) => {
-      const current = this.queue.shift();
+      const current = queue.shift();
       if (!current) return;
       try {
         const parsed = JSON.parse(line) as {
@@ -198,20 +211,18 @@ class OnDemandKokoroWorker {
         current.reject(error instanceof Error ? error : new Error("Invalid Kokoro worker reply."));
       }
     });
-    const failAll = (reason: string) => {
-      if (this.child === child) this.child = null;
-      const pending = this.queue.splice(0);
-      for (const item of pending) {
-        item.reject(new Error(reason));
-      }
-    };
+    child.stdin.on("error", (error) => failAll(error.message));
     child.on("error", (error) => failAll(error.message));
     child.on("close", (code) => failAll(`Kokoro worker exited with code ${code ?? "unknown"}.`));
-    this.child = child;
-    return child;
+    this.worker = handle;
+    return handle;
   }
 
-  synthesize(text: string, timeout: SpeechModelUnloadTimeout): Promise<Uint8Array> {
+  synthesize(
+    text: string,
+    timeout: SpeechModelUnloadTimeout,
+    signal?: AbortSignal,
+  ): Promise<Uint8Array> {
     const home = NodeOS.homedir();
     const ttsDir = NodePath.join(home, ".cache", "t3code", "tts");
     const modelPath = NodePath.join(ttsDir, "kokoro-v1.0.int8.onnx");
@@ -219,26 +230,66 @@ class OnDemandKokoroWorker {
     if (!NodeFS.existsSync(modelPath) || !NodeFS.existsSync(voicesPath)) {
       return Promise.reject(new Error("Kokoro model files are not installed."));
     }
+    if (signal?.aborted) {
+      return Promise.reject(new Error("Speech synthesis cancelled."));
+    }
     this.clearTimer();
-    const task = this.serial.then(
-      () =>
-        new Promise<Uint8Array>((resolve, reject) => {
-          const child = this.ensureProcess(modelPath, voicesPath);
-          this.queue.push({ resolve, reject });
-          const payload = JSON.stringify({
-            text,
-            lang: detectSpeechLanguage(text),
-            voice: "af_heart",
-          });
-          child.stdin.write(`${payload}\n`, (error) => {
-            if (error) {
-              const index = this.queue.findIndex((entry) => entry.resolve === resolve);
-              if (index >= 0) this.queue.splice(index, 1);
-              reject(error);
-            }
-          });
-        }),
-    );
+    const task = this.serial.then(() => {
+      if (signal?.aborted) {
+        return Promise.reject(new Error("Speech synthesis cancelled."));
+      }
+      this.clearTimer();
+      return new Promise<Uint8Array>((resolve, reject) => {
+        const handle = this.ensureProcess(modelPath, voicesPath);
+        let settled = false;
+        const finish = (
+          outcome:
+            | { readonly ok: true; readonly bytes: Uint8Array }
+            | { readonly ok: false; readonly error: Error },
+        ) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(deadline);
+          signal?.removeEventListener("abort", onAbort);
+          if (outcome.ok) {
+            resolve(outcome.bytes);
+          } else {
+            reject(outcome.error);
+          }
+        };
+        const entry: PendingWorkerReply = {
+          resolve: (bytes) => finish({ ok: true, bytes }),
+          reject: (error) => finish({ ok: false, error }),
+        };
+        const onAbort = () => {
+          const index = handle.queue.indexOf(entry);
+          if (index >= 0) handle.queue.splice(index, 1);
+          if (this.worker === handle) this.stop();
+          finish({ ok: false, error: new Error("Speech synthesis cancelled.") });
+        };
+        const deadline = setTimeout(() => {
+          const index = handle.queue.indexOf(entry);
+          if (index >= 0) handle.queue.splice(index, 1);
+          if (this.worker === handle) this.stop();
+          finish({ ok: false, error: new Error("Kokoro synthesis timed out.") });
+        }, SYNTHESIS_TIMEOUT_MS);
+        deadline.unref?.();
+        signal?.addEventListener("abort", onAbort, { once: true });
+        handle.queue.push(entry);
+        const payload = JSON.stringify({
+          text,
+          lang: detectSpeechLanguage(text),
+          voice: "af_heart",
+        });
+        handle.child.stdin.write(`${payload}\n`, (error) => {
+          if (error) {
+            const index = handle.queue.indexOf(entry);
+            if (index >= 0) handle.queue.splice(index, 1);
+            finish({ ok: false, error });
+          }
+        });
+      });
+    });
     this.serial = task.then(
       () => {
         this.scheduleUnload(timeout);
@@ -253,10 +304,14 @@ class OnDemandKokoroWorker {
 
 const sharedKokoroWorker = new OnDemandKokoroWorker();
 
-function synthesizeWithMacSay(text: string): Promise<Uint8Array> {
+function synthesizeWithMacSay(text: string, signal?: AbortSignal): Promise<Uint8Array> {
+  if (signal?.aborted) {
+    return Promise.reject(new Error("Speech synthesis cancelled."));
+  }
   return new Promise<Uint8Array>((resolve, reject) => {
     const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-tts-"));
     const outputWav = NodePath.join(tempDir, "speech.wav");
+    let settled = false;
     const cleanup = () => {
       try {
         NodeFS.rmSync(tempDir, { recursive: true, force: true });
@@ -267,25 +322,50 @@ function synthesizeWithMacSay(text: string): Promise<Uint8Array> {
     const child = NodeChildProcess.spawn(
       "/usr/bin/say",
       ["-o", outputWav, "--data-format=LEI16@22050", text],
-      { stdio: ["ignore", "ignore", "pipe"] },
+      { stdio: ["ignore", "ignore", "ignore"] },
     );
-    child.on("error", (error) => {
+    const finish = (
+      outcome:
+        | { readonly ok: true; readonly bytes: Uint8Array }
+        | { readonly ok: false; readonly error: Error },
+    ) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      signal?.removeEventListener("abort", onAbort);
       cleanup();
-      reject(error);
+      if (outcome.ok) {
+        resolve(outcome.bytes);
+      } else {
+        reject(outcome.error);
+      }
+    };
+    const onAbort = () => {
+      child.kill("SIGTERM");
+      finish({ ok: false, error: new Error("Speech synthesis cancelled.") });
+    };
+    const deadline = setTimeout(() => {
+      child.kill("SIGTERM");
+      finish({ ok: false, error: new Error("macOS say synthesis timed out.") });
+    }, SYNTHESIS_TIMEOUT_MS);
+    deadline.unref?.();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    child.on("error", (error) => {
+      finish({ ok: false, error });
     });
     child.on("close", (code) => {
       if (code !== 0) {
-        cleanup();
-        reject(new Error(`macOS say exited with code ${code ?? "unknown"}.`));
+        finish({ ok: false, error: new Error(`macOS say exited with code ${code ?? "unknown"}.`) });
         return;
       }
       try {
         const bytes = new Uint8Array(NodeFS.readFileSync(outputWav));
-        cleanup();
-        resolve(bytes);
+        finish({ ok: true, bytes });
       } catch (error) {
-        cleanup();
-        reject(error instanceof Error ? error : new Error("Failed to read synthesized WAV."));
+        finish({
+          ok: false,
+          error: error instanceof Error ? error : new Error("Failed to read synthesized WAV."),
+        });
       }
     });
   });
@@ -302,9 +382,9 @@ const makeDefaultSynthesizeAudio = (platform: NodeJS.Platform): SpeechAudioSynth
     timeout: SpeechModelUnloadTimeout,
   ) {
     return yield* Effect.tryPromise({
-      try: () =>
-        sharedKokoroWorker.synthesize(text, timeout).catch((error) => {
-          if (platform === "darwin") return synthesizeWithMacSay(text);
+      try: (signal) =>
+        sharedKokoroWorker.synthesize(text, timeout, signal).catch((error) => {
+          if (platform === "darwin" && !signal.aborted) return synthesizeWithMacSay(text, signal);
           throw error;
         }),
       catch: (cause) => new SpeechOperationError({ operation: "synthesis", cause }),

@@ -27,6 +27,7 @@ import {
   antigravitySteersWithPrompt,
   applyAntigravityAcpModelSelection,
   buildAntigravityPrompt,
+  shouldSkipAntigravityPermissions,
   type AntigravityAcpRuntimeInput,
 } from "../../provider/acp/AntigravityAcpSupport.ts";
 import {
@@ -304,6 +305,9 @@ export function makeAntigravityAcpAdapterFlavor(
     promptInactivityTimeout: "15 minutes",
     reportsPerTurnPromptUsage: true,
     geminiPromptUsage: true,
+    restartRuntimeForPolicyChange: (launchedPolicy, nextPolicy) =>
+      shouldSkipAntigravityPermissions(launchedPolicy) !==
+      shouldSkipAntigravityPermissions(nextPolicy),
     ...(profileDirectory === undefined
       ? {}
       : {

@@ -338,14 +338,13 @@ const linkAntigravityUserConfig = Effect.fn("linkAntigravityUserConfig")(functio
           }
           return Effect.tryPromise({
             try: () => NodeFSP.rmdir(link),
-            catch: (cause) => cause,
+            catch: (cause) =>
+              isErrorWithCode(cause, "ENOTEMPTY", "EEXIST", "ENOTDIR")
+                ? ({ _tag: "SkipLink" } as const)
+                : error,
           }).pipe(
             Effect.as(undefined),
-            Effect.catch((cause) =>
-              isErrorWithCode(cause, "ENOTEMPTY", "EEXIST", "ENOTDIR")
-                ? Effect.succeed(target)
-                : Effect.fail(error),
-            ),
+            Effect.catchTags({ SkipLink: () => Effect.succeed(target) }),
           );
         }),
       );
