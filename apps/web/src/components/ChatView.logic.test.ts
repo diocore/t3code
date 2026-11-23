@@ -12,6 +12,9 @@ import {
   buildExpiredTerminalContextToastCopy,
   mergeDirectPreviewAnnotation,
   planComposerTurn,
+  resolveComposerInteractionMode,
+  restorePlanFollowUpComposer,
+  shouldShowPlanFollowUpPrompt,
   deriveTimelineWorking,
   snapshotComposerSend,
   withMessageContext,
@@ -1184,6 +1187,102 @@ describe("waitForRevertedMessage", () => {
       vi.clearAllTimers();
       vi.useRealTimers();
     }
+  });
+});
+
+describe("resolveComposerInteractionMode", () => {
+  it("enables plan mode UI unless the provider hides the toggle", () => {
+    expect(
+      resolveComposerInteractionMode({
+        provider: { showInteractionModeToggle: true },
+        interactionMode: "plan",
+      }),
+    ).toEqual({ enabled: true, interactionMode: "plan" });
+    expect(
+      resolveComposerInteractionMode({
+        provider: { showInteractionModeToggle: false },
+        interactionMode: "plan",
+      }),
+    ).toEqual({ enabled: false, interactionMode: "default" });
+    expect(
+      resolveComposerInteractionMode({
+        provider: null,
+        interactionMode: "plan",
+      }),
+    ).toEqual({ enabled: false, interactionMode: "default" });
+  });
+});
+
+describe("shouldShowPlanFollowUpPrompt", () => {
+  it("shows only when settled in plan mode with an actionable plan and no pending question or attachments", () => {
+    const base = {
+      pendingUserInputCount: 0,
+      interactionMode: "plan" as const,
+      latestTurnSettled: true,
+      hasActionableProposedPlan: true,
+      hasComposerAttachments: false,
+    };
+    expect(shouldShowPlanFollowUpPrompt(base)).toBe(true);
+    expect(shouldShowPlanFollowUpPrompt({ ...base, pendingUserInputCount: 1 })).toBe(false);
+    expect(shouldShowPlanFollowUpPrompt({ ...base, interactionMode: "default" })).toBe(false);
+    expect(shouldShowPlanFollowUpPrompt({ ...base, latestTurnSettled: false })).toBe(false);
+    expect(shouldShowPlanFollowUpPrompt({ ...base, hasActionableProposedPlan: false })).toBe(false);
+    expect(shouldShowPlanFollowUpPrompt({ ...base, hasComposerAttachments: true })).toBe(false);
+  });
+});
+
+describe("restorePlanFollowUpComposer", () => {
+  // The draft is the failed follow-up's thread; the refs and cursor are whatever thread is on
+  // screen.
+  it.each([
+    {
+      name: "puts the follow-up back while its thread is open",
+      before: { draft: "", refs: "", cursor: null },
+      routeIsCurrent: true,
+      after: { draft: "Tighten step 2", refs: "Tighten step 2", cursor: "Tighten step 2" },
+    },
+    {
+      name: "keeps a draft typed while the follow-up was in flight",
+      before: { draft: "Next idea", refs: "Next idea", cursor: null },
+      routeIsCurrent: true,
+      after: { draft: "Next idea", refs: "Next idea", cursor: null },
+    },
+    {
+      name: "leaves another thread's composer alone after navigating away",
+      before: { draft: "", refs: "Other thread", cursor: null },
+      routeIsCurrent: false,
+      after: { draft: "Tighten step 2", refs: "Other thread", cursor: null },
+    },
+  ])("$name", ({ before, routeIsCurrent, after }) => {
+    const composer: { draft: string; refs: string; cursor: string | null } = { ...before };
+    restorePlanFollowUpComposer({
+      snapshot: {
+        prompt: "Tighten step 2",
+        environmentContexts: [],
+        terminalContexts: [],
+        reviewComments: [],
+        previewAnnotations: [],
+        threadContexts: [],
+      },
+      draftHasUserContent: composer.draft.trim().length > 0,
+      routeIsCurrent,
+      writeComposerRefs: (snapshot) => {
+        composer.refs = snapshot.prompt;
+      },
+      writePrompt: (prompt) => {
+        composer.draft = prompt;
+      },
+      writeTerminalContexts: () => undefined,
+      writeReviewComments: () => undefined,
+      writePreviewAnnotations: () => undefined,
+      writeThreadContexts: () => undefined,
+      writeEnvironmentContexts: () => undefined,
+      resetCursor: ({ prompt }) => {
+        composer.cursor = prompt;
+      },
+    });
+
+    expect(composer).toEqual(after);
   });
 });
 

@@ -2812,6 +2812,7 @@ describe("AntigravityAdapterV2 plan mode", () => {
         assert.isDefined(proposedPlan);
         if (proposedPlan?.type === "plan.updated" && proposedPlan.plan.kind === "proposed_plan") {
           assert.equal(proposedPlan.plan.markdown, "# Proposed Plan\n\n- Step 1");
+          assert.equal(proposedPlan.plan.status, "active");
         }
 
         const defaultPolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({

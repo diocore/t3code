@@ -70,4 +70,16 @@ it("treats only the commands the composer runs itself as local", () => {
   expect(composerRunsDraftLocally({ ...all, text: "fix the bug" })).toBe(false);
   expect(composerRunsDraftLocally({ ...all, holdsOnlyText: false, text: "/clear" })).toBe(false);
   expect(composerRunsDraftLocally({ ...all, holdsOnlyText: false, text: "/side why?" })).toBe(true);
+  for (const text of ["/plan", "  /PLAN  ", "/default"]) {
+    expect(composerRunsDraftLocally({ ...all, interactionModeToggle: true, text })).toBe(true);
+    expect(composerRunsDraftLocally({ ...all, interactionModeToggle: false, text })).toBe(false);
+    expect(
+      composerRunsDraftLocally({
+        ...all,
+        holdsOnlyText: false,
+        interactionModeToggle: true,
+        text,
+      }),
+    ).toBe(false);
+  }
 });
