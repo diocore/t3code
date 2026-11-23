@@ -376,6 +376,7 @@ const availableModes: ReadonlyArray<AcpCompat.SessionMode> = antigravityProfile
       { id: "default", name: "Default" },
       { id: "auto_edit", name: "Auto edit" },
       { id: "yolo", name: "YOLO" },
+      { id: "plan", name: "Plan" },
     ]
   : copilotModesProfile
     ? [

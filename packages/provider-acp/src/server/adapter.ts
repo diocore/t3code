@@ -4531,6 +4531,12 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               ? toolCall
               : { ...toolCall, backgroundCommandTaskId },
           );
+          if (projectedStatus === undefined) {
+            const proposedPlanMarkdown = flavor.extractProposedPlanMarkdown?.(toolCall);
+            if (proposedPlanMarkdown !== undefined && proposedPlanMarkdown.length > 0) {
+              yield* captureProposedPlan({ planMarkdown: proposedPlanMarkdown });
+            }
+          }
           // A failure racing Stop needs the provider's cancellation signal before relabeling it.
           const previousStatus = previous === undefined ? undefined : toolStatus(previous.status);
           if (

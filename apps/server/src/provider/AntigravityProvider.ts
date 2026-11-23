@@ -211,7 +211,7 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
     ...buildServerProvider({
       presentation: {
         displayName: "Antigravity",
-        showInteractionModeToggle: false,
+        showInteractionModeToggle: true,
         supportedRuntimeModes: options.rememberedRuntimeModes ?? RUNTIME_MODES_WITHOUT_AUTO,
       },
       enabled: settings.enabled,

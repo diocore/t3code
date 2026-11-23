@@ -17,6 +17,7 @@ import {
   applyAntigravityAcpModelSelection,
   antigravityClientInfo,
   antigravityPermissionDisposition,
+  antigravityRuntimeModeForSessionMode,
   antigravitySessionMeta,
   antigravitySessionMode,
   buildAntigravityPrompt,
@@ -100,6 +101,18 @@ describe("Antigravity Auto", () => {
       availableModes: offered.map((id) => ({ id, name: id })),
     };
     expect(antigravitySessionMode("auto", modeState)).toBe(expected);
+  });
+
+  it("preserves plan mode and treats it as an interaction mode rather than a runtime mode", () => {
+    const modeState = {
+      currentModeId: "default",
+      availableModes: ["default", "accept-edits", "auto", "plan"].map((id) => ({
+        id,
+        name: id,
+      })),
+    };
+    expect(antigravitySessionMode("plan", modeState)).toBe("plan");
+    expect(antigravityRuntimeModeForSessionMode("plan")).toBeUndefined();
   });
 
   it("skips native permissions at launch only for unrestricted full-access policies", () => {
