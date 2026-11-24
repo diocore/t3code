@@ -1171,6 +1171,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
     const runner = layerQueryRunner.pipe(
       Layer.provide(
         Layer.mock(PortScanner.PortDiscovery)({
+          configuredUrlProbing: false,
           trackAgent: () => {
             runningAgents += 1;
             return () => {

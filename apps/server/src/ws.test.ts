@@ -864,7 +864,10 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
   Layer.mock(PeerThreadRelay.PeerThreadRelay)({}),
   Layer.mock(PeerClientPairing.PeerClientPairing)({}),
-  Layer.mock(PortScanner.PortDiscovery)({ trackAgent: () => () => undefined }),
+  Layer.mock(PortScanner.PortDiscovery)({
+    configuredUrlProbing: false,
+    trackAgent: () => () => undefined,
+  }),
   Layer.mock(PreviewManager.PreviewManager)({}),
   Layer.mock(ProcessDiagnostics.ProcessDiagnostics)({}),
   Layer.mock(ProcessResourceMonitor.ProcessResourceMonitor)({}),

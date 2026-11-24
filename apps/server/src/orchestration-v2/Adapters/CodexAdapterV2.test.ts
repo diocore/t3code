@@ -1115,6 +1115,7 @@ describe("CodexAdapterV2 process exit", () => {
     const factoryLayer = CodexAdapterV2.layerAppServerClientFactory.pipe(
       Layer.provide(
         Layer.mock(PortScanner.PortDiscovery)({
+          configuredUrlProbing: false,
           trackAgent: () => {
             runningAgents += 1;
             return () => {

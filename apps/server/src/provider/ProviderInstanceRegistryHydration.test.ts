@@ -250,7 +250,10 @@ describe("providerHostLayer", () => {
         const hydrated = capture("hydrated").pipe(
           Layer.provide(providerHostLayer),
           Layer.provide(
-            Layer.mock(PortScanner.PortDiscovery)({ trackAgent: () => () => undefined }),
+            Layer.mock(PortScanner.PortDiscovery)({
+              configuredUrlProbing: false,
+              trackAgent: () => () => undefined,
+            }),
           ),
           Layer.provide(layerHostDeps),
         );

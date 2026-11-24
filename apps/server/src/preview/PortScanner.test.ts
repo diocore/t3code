@@ -51,6 +51,10 @@ const layerForeground = Layer.mock(BackgroundPolicy.BackgroundPolicy)({
 
 const layerScanner = PortScanner.layer.pipe(Layer.provide(layerForeground));
 
+const layerDiscoveryEnabled = Layer.succeed(HostProcess.Environment, {
+  T3CODE_PORT_DISCOVERY: "1",
+});
+
 const layerProbeFailure = (
   run: ProcessRunner.ProcessRunner["Service"]["run"],
   fetch: typeof globalThis.fetch = globalThis.fetch,
@@ -60,6 +64,7 @@ const layerProbeFailure = (
     Layer.provide(
       Layer.mergeAll(
         fileSystem,
+        layerDiscoveryEnabled,
         Layer.succeed(ProcessRunner.ProcessRunner, { run }),
         Layer.succeed(HostProcess.Platform, "linux"),
         FetchHttpClient.layer.pipe(Layer.provide(Layer.succeed(FetchHttpClient.Fetch, fetch))),
@@ -100,6 +105,7 @@ const layerLsofScanner = (input: {
       Layer.mergeAll(
         input.backgroundPolicy ?? layerForeground,
         layerNoProc,
+        layerDiscoveryEnabled,
         Layer.succeed(ProcessRunner.ProcessRunner, {
           run: () =>
             Effect.succeed({
@@ -601,6 +607,7 @@ effectIt.effect.each([
   const layer = layerScanner.pipe(
     Layer.provide(
       Layer.mergeAll(
+        layerDiscoveryEnabled,
         FileSystem.layerNoop({
           readFileString: (path) => {
             if (!path.startsWith("/proc/net/tcp") || mode === "missing") {
@@ -683,6 +690,7 @@ effectIt.effect("ignores a partial Windows netstat snapshot when one query exits
     Layer.provide(
       Layer.mergeAll(
         layerNoProc,
+        layerDiscoveryEnabled,
         Layer.succeed(ProcessRunner.ProcessRunner, {
           run: (input) => {
             if (input.command === "tasklist.exe") {
@@ -780,9 +788,16 @@ effectIt.effect("rechecks the socket owner before stopping a Linux server withou
   }).pipe(Effect.provide(layer));
 });
 
-effectIt.effect.each(["linux", "darwin", "win32"] as const)(
-  "reads no listeners on %s while T3CODE_PORT_DISCOVERY=0, and still probes configured URLs",
-  (platform) => {
+effectIt.effect.each([
+  { platform: "linux", env: {} },
+  { platform: "darwin", env: {} },
+  { platform: "win32", env: {} },
+  { platform: "linux", env: { T3CODE_PORT_DISCOVERY: "0" } },
+  { platform: "darwin", env: { T3CODE_PORT_DISCOVERY: "0" } },
+  { platform: "win32", env: { T3CODE_PORT_DISCOVERY: "0" } },
+] as const)(
+  "reads no listeners and sends no HTTP probes on $platform when T3CODE_PORT_DISCOVERY is unset or 0",
+  ({ platform, env }) => {
     const configuredUrl = `http://localhost:${LSOF_TEST_PORT}/docs`;
     const commands: string[] = [];
     const fileReads: string[] = [];
@@ -808,7 +823,7 @@ effectIt.effect.each(["linux", "darwin", "win32"] as const)(
             },
           }),
           Layer.succeed(HostProcess.Platform, platform),
-          Layer.succeed(HostProcess.Environment, { T3CODE_PORT_DISCOVERY: "0" }),
+          Layer.succeed(HostProcess.Environment, env),
           FetchHttpClient.layer.pipe(
             Layer.provide(
               Layer.succeed(FetchHttpClient.Fetch, (input) => {
@@ -826,11 +841,11 @@ effectIt.effect.each(["linux", "darwin", "win32"] as const)(
     return Effect.gen(function* () {
       const scanner = yield* ownedScanner();
       scanner.trackAgent();
+      expect(scanner.configuredUrlProbing).toBe(false);
       expect(yield* scanner.scan()).toEqual([]);
-      expect(yield* scanner.scan([configuredUrl])).toMatchObject([
-        { port: LSOF_TEST_PORT, pid: null, terminal: null, url: configuredUrl },
-      ]);
-      expect(requests).toEqual([configuredUrl]);
+      expect(yield* scanner.scan([configuredUrl])).toEqual([]);
+      yield* Effect.scoped(scanner.retain);
+      expect(requests).toEqual([]);
       expect(commands).toEqual([]);
       expect(fileReads).toEqual([]);
     }).pipe(Effect.provide(layer));
@@ -865,6 +880,7 @@ effectIt.effect.each(["linux", "darwin"] as const)(
     const layer = layerScanner.pipe(
       Layer.provide(
         Layer.mergeAll(
+          layerDiscoveryEnabled,
           FileSystem.layerNoop({
             readFileString: (path) => {
               const agent = procAgent[path];
@@ -1106,6 +1122,7 @@ effectIt.live.skipIf(HostProcess.Platform.defaultValue() === "win32")(
       Effect.scoped,
       Effect.provide(
         layerScanner.pipe(
+          Layer.provide(layerDiscoveryEnabled),
           Layer.provide(ProcessRunner.layer),
           Layer.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer)),
         ),
