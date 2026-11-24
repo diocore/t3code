@@ -64,13 +64,15 @@ describe("resolveComposerMenuSelection", () => {
 });
 
 describe("mobile slash commands", () => {
-  it("keeps a provider's native /plan", () => {
+  it("keeps native /plan when interaction mode toggle is disabled", () => {
     const items = buildComposerSlashCommandItems({
       query: "pl",
       atMessageStart: true,
       hasThread: true,
+      allowInteractionMode: false,
       selectedProviderStatus: {
         driver: ProviderDriverKind.make("antigravity"),
+        showInteractionModeToggle: false,
         slashCommands: [{ name: "plan", description: "Plan with Antigravity" }],
       },
     });
@@ -84,8 +86,26 @@ describe("mobile slash commands", () => {
         draftMessage: "/pl",
         trigger: { rangeStart: 0, rangeEnd: 3 },
         item,
+        allowInteractionMode: false,
       }),
-    ).toEqual({ text: "/plan ", cursor: 6 });
+    ).toEqual({ text: "/plan ", cursor: 6, interactionMode: null });
+  });
+
+  it("offers T3's /plan in place of a duplicate provider /plan for toggleable providers", () => {
+    const items = buildComposerSlashCommandItems({
+      query: "pl",
+      atMessageStart: true,
+      hasThread: true,
+      allowInteractionMode: true,
+      selectedProviderStatus: {
+        driver: ProviderDriverKind.make("antigravity"),
+        showInteractionModeToggle: true,
+        slashCommands: [{ name: "plan", description: "Plan with Antigravity" }],
+      },
+    });
+
+    expect(items).toHaveLength(1);
+    expect(items[0]?.id).toBe("cmd:plan");
   });
 
   it("offers T3's /clear in place of the provider's, only at the message start", () => {
@@ -98,12 +118,45 @@ describe("mobile slash commands", () => {
         query: "cle",
         atMessageStart,
         hasThread: true,
+        allowInteractionMode: true,
         offersFreshSession,
         selectedProviderStatus: claude,
       }).map((item) => item.id);
     expect(build(true)).toEqual(["cmd:clear"]);
     expect(build(false)).toEqual(["pcmd:clear"]);
     expect(build(true, false)).toEqual([]);
+  });
+
+  it("applies the T3 plan command for supported providers", () => {
+    const items = buildComposerSlashCommandItems({
+      query: "plan",
+      atMessageStart: true,
+      hasThread: true,
+      allowInteractionMode: true,
+      selectedProviderStatus: {
+        driver: ProviderDriverKind.make("codex"),
+        slashCommands: [],
+      },
+    });
+    const item = items[0];
+    if (!item) throw new Error("Expected the T3 plan command");
+    expect(
+      resolveComposerCommandSelection({
+        draftMessage: "/plan",
+        trigger: { rangeStart: 0, rangeEnd: 5 },
+        item,
+        allowInteractionMode: true,
+      }),
+    ).toEqual({ text: "", cursor: 0, interactionMode: "plan" });
+
+    expect(
+      resolveComposerCommandSelection({
+        draftMessage: "/plan",
+        trigger: { rangeStart: 0, rangeEnd: 5 },
+        item,
+        allowInteractionMode: false,
+      }),
+    ).toEqual({ text: "/plan ", cursor: 6, interactionMode: null });
   });
 });
 

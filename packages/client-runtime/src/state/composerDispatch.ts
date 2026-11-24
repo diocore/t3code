@@ -63,12 +63,14 @@ export function composerRunsDraftLocally(input: {
   readonly usageLimits: boolean;
   readonly codexFeedback: boolean;
   readonly freshSession: boolean;
+  readonly interactionModeToggle?: boolean;
 }): boolean {
   if (input.sideChat && parseSideChatCommand(input.text) !== null) return true;
   if (!input.holdsOnlyText) return false;
   return (
     (input.usageLimits && isUsageLimitsCommand(input.text)) ||
     (input.codexFeedback && parseCodexFeedbackCommand(input.text) !== null) ||
-    (input.freshSession && isClearComposerCommand(input.text))
+    (input.freshSession && isClearComposerCommand(input.text)) ||
+    (input.interactionModeToggle === true && /^\/(plan|default)\s*$/i.test(input.text.trim()))
   );
 }

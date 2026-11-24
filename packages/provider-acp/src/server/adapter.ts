@@ -3156,7 +3156,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               runId: context.input.runId,
               nodeId,
               kind: "proposed_plan",
-              status: "completed",
+              status: "active",
               markdown,
             },
           });

@@ -163,9 +163,12 @@ function PermissionsChip() {
       </button>
       {mode === "full-access" ? null : (
         <ComposerFooterModeControls
+          showInteractionModeToggle={false}
+          interactionMode="default"
           runtimeMode={mode}
           runtimeModeOptions={options}
           accessDisplay="label"
+          onToggleInteractionMode={() => {}}
           onRuntimeModeChange={setMode}
         />
       )}
