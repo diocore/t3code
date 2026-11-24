@@ -2684,6 +2684,51 @@ describe("AntigravityAdapterV2 plan mode", () => {
     );
   });
 
+  it("extracts proposed plan markdown from differently named *-plan.md files in the brain directory", () => {
+    const profileDir = "/state/antigravity/instance-1";
+    const flavorWithProfile = makeAntigravityAcpAdapterFlavor({
+      instanceId: ProviderInstanceId.make("antigravity-named-plan-flavor"),
+      random: undefined as never,
+      fileSystem: undefined as never,
+      path: undefined as never,
+      host: undefined as never,
+      selfInvocation: undefined as never,
+      makeRuntime: () => Effect.die("not spawned in this test"),
+      withProcess: (_stop, task) => task,
+      defaultModel: Effect.undefined,
+      profileDirectory: profileDir,
+    });
+    assert.equal(
+      flavorWithProfile.extractProposedPlanMarkdown?.({
+        toolCallId: "call_1",
+        kind: "edit",
+        status: "completed",
+        data: {
+          rawInput: {
+            Path: `${profileDir}/antigravity-acp/brain/conv-1/disable-port-discovery-plan.md`,
+            Content: "# Disable port discovery\n\n- Step 1\n",
+          },
+        },
+      }),
+      "# Disable port discovery\n\n- Step 1",
+    );
+    for (const ignoredPath of [
+      `${profileDir}/antigravity-acp/brain/conv-1/explan.md`,
+      `${profileDir}/antigravity-acp/brain/conv-1/walkthrough.md`,
+      "/workspace/repo/disable-port-discovery-plan.md",
+    ]) {
+      assert.isUndefined(
+        flavorWithProfile.extractProposedPlanMarkdown?.({
+          toolCallId: "call_ignored",
+          kind: "edit",
+          status: "completed",
+          data: { rawInput: { Path: ignoredPath, Content: "# Not a plan\n" } },
+        }),
+        ignoredPath,
+      );
+    }
+  });
+
   it.effect(
     "enters plan mode, projects implementation_plan.md as a proposed_plan, and exits to build mode",
     () =>

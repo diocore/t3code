@@ -578,6 +578,8 @@ export function antigravitySubagentOutput(toolCall: AcpToolCallState): string | 
   return typeof output === "string" && output.trim() ? boundText(output.trim()) : undefined;
 }
 
+const ANTIGRAVITY_PLAN_FILE_NAME = /(?:^|[-_])plan\.md$/;
+
 function isAntigravityImplementationPlanPath(
   filePath: string | undefined,
   profileDirectory: string | undefined,
@@ -592,10 +594,10 @@ function isAntigravityImplementationPlanPath(
     if (relative === "" || relative.startsWith("..") || NodePath.isAbsolute(relative)) {
       return false;
     }
-    return NodePath.basename(resolved) === "implementation_plan.md";
+    return ANTIGRAVITY_PLAN_FILE_NAME.test(NodePath.basename(resolved));
   }
   const normalized = trimmed.replaceAll("\\", "/");
-  return /(?:^|\/)antigravity-acp\/brain\/[^/]+\/implementation_plan\.md$/.test(normalized);
+  return /(?:^|\/)antigravity-acp\/brain\/[^/]+\/(?:[^/]*[-_])?plan\.md$/.test(normalized);
 }
 
 export function extractAntigravityProposedPlanMarkdown(
