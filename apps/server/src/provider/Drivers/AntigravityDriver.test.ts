@@ -431,9 +431,9 @@ it.layer(layerTest)("AntigravityDriver", (it) => {
         ]);
 
         // Full access passes `--dangerously-skip-permissions` so native subagents do not hang on
-        // unattended tool approvals; policy overrides and narrower modes stay in ask mode.
+        // unattended tool approvals; policy overrides, Plan mode, and narrower modes stay in ask mode.
         h.controls.selected = yield* h.makeExecutable("runtime cli", { initialMode: "auto_edit" });
-        for (const [caseName, cliPolicy, expectsSkipFlag] of [
+        for (const [caseName, cliPolicy, expectsSkipFlag, expectedModes] of [
           [
             "full-access",
             ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
@@ -442,6 +442,17 @@ it.layer(layerTest)("AntigravityDriver", (it) => {
               cwd: workspace,
             }),
             true,
+            ["default"],
+          ],
+          [
+            "full-access-plan",
+            ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+              runtimeMode: "full-access",
+              interactionMode: "plan",
+              cwd: workspace,
+            }),
+            false,
+            ["default", "plan"],
           ],
           [
             "full-access-sandbox-override",
@@ -452,6 +463,7 @@ it.layer(layerTest)("AntigravityDriver", (it) => {
               cwd: workspace,
             }),
             false,
+            ["default"],
           ],
           [
             "auto-accept-edits",
@@ -461,6 +473,7 @@ it.layer(layerTest)("AntigravityDriver", (it) => {
               cwd: workspace,
             }),
             false,
+            ["default"],
           ],
         ] as const) {
           const requestsBefore = (yield* h.readRequests).length;
@@ -493,7 +506,7 @@ it.layer(layerTest)("AntigravityDriver", (it) => {
                   request.params?.configId === "mode",
               )
               .map((request) => request.params?.value),
-          ).toEqual(["default"]);
+          ).toEqual(expectedModes);
         }
       }),
   );

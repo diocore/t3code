@@ -9568,13 +9568,20 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 launchedRuntimePolicy,
                 turnInput.runtimePolicy,
               ) === true;
+            let activatedForPolicy: AcpSessionRuntime.AcpSessionRuntimeStartResult | undefined;
             if (restartForPolicy) {
-              yield* startAcpRuntime(turnInput.threadId, requestedSessionId);
-              yield* Ref.set(runtimeRestartRequired, false);
+              const mcpContext = yield* readMcpContext(turnInput.threadId);
+              prepareTerminalEnvironment(mcpContext, requestedSessionId);
+              yield* advanceRuntimeCallbackGeneration;
+              yield* Ref.set(runtimeRestartRequired, true);
               yield* Ref.set(activeSessionId, null);
               yield* Ref.set(activeSessionSetup, null);
               yield* Ref.set(activeSelection, null);
               yield* Ref.set(activeInteractionMode, null);
+              activatedForPolicy = yield* startAcpRuntime(turnInput.threadId, requestedSessionId);
+              rememberTerminalEnvironment(activatedForPolicy.sessionId, mcpContext);
+              yield* runtime.drainEvents;
+              yield* Ref.set(runtimeRestartRequired, false);
             }
             const restartAfterInterrupt = restartForPolicy
               ? false
@@ -9584,7 +9591,9 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               restartAfterInterrupt ||
               restartForPolicy;
             if (needsSessionActivation) {
-              const activated = yield* activateSession(requestedSessionId, turnInput.threadId);
+              const activated =
+                activatedForPolicy ??
+                (yield* activateSession(requestedSessionId, turnInput.threadId));
               yield* Ref.set(activeSessionId, activated.sessionId);
               yield* Ref.set(loadingSessionId, null);
               yield* setActiveSessionSetup(activated);
