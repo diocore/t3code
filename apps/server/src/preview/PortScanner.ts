@@ -31,6 +31,7 @@ import * as ProcessRunner from "../processRunner.ts";
 export class PortDiscovery extends Context.Service<
   PortDiscovery,
   {
+    readonly configuredUrlProbing: boolean;
     readonly scan: (
       configuredUrls?: ReadonlyArray<string>,
     ) => Effect.Effect<ReadonlyArray<DiscoveredLocalServer>>;
@@ -85,7 +86,7 @@ export interface AgentCommandStopWatcher {
   readonly onStopAbandoned: (command: string) => Effect.Effect<void>;
 }
 
-/** `0` turns off listener discovery; configured preview URLs are still probed. */
+/** `1` turns on listener discovery and configured preview URL probing. */
 const PORT_DISCOVERY_ENV = "T3CODE_PORT_DISCOVERY";
 
 const POLL_INTERVAL = Duration.seconds(3);
@@ -533,7 +534,7 @@ export const make = Effect.gen(function* PortDiscoveryMake() {
   const processRunner = yield* ProcessRunner.ProcessRunner;
   const fileSystem = yield* FileSystem.FileSystem;
   const hostPlatform = yield* HostProcess.Platform;
-  const listenerDiscovery = (yield* HostProcess.Environment)[PORT_DISCOVERY_ENV] !== "0";
+  const portDiscoveryEnabled = (yield* HostProcess.Environment)[PORT_DISCOVERY_ENV] === "1";
   const httpClient = (yield* HttpClient.HttpClient).pipe(HttpClient.withScope);
   const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
   const stateRef = yield* Ref.make<ScannerState>({
@@ -882,7 +883,9 @@ export const make = Effect.gen(function* PortDiscoveryMake() {
 
   // Routine polling helpers share operation/probe spans instead of tracing every tick.
   const scanUnlocked = Effect.fnUntraced(function* (configuredUrls: ReadonlyArray<string>) {
-    if (!listenerDiscovery) return yield* probeWebServers([], configuredUrls);
+    if (!portDiscoveryEnabled) {
+      return { discovered: [], configured: new Map() } satisfies WebProbeSnapshot;
+    }
     const state = yield* Ref.get(stateRef);
     const terminalOwners = new Map<number, ServerOwner>();
     for (const registration of state.terminalProcesses.values()) {
@@ -1002,7 +1005,9 @@ export const make = Effect.gen(function* PortDiscoveryMake() {
   );
 
   const pollIfRetained = Ref.get(stateRef).pipe(
-    Effect.flatMap((state) => (state.retainCount > 0 ? pollTick() : Effect.void)),
+    Effect.flatMap((state) =>
+      portDiscoveryEnabled && state.retainCount > 0 ? pollTick() : Effect.void,
+    ),
   );
   const scheduledPoll = backgroundPolicy.shouldRunOpportunisticWork.pipe(
     Effect.flatMap((foreground) => (foreground ? pollIfRetained : Effect.void)),
@@ -1014,7 +1019,7 @@ export const make = Effect.gen(function* PortDiscoveryMake() {
       state.retainCount === 0,
       { ...state, retainCount: state.retainCount + 1 },
     ]);
-    if (wasIdle) {
+    if (wasIdle && portDiscoveryEnabled) {
       yield* pollTick();
     }
   });
@@ -1251,6 +1256,7 @@ export const make = Effect.gen(function* PortDiscoveryMake() {
     signalUntilStopped(input).pipe(Effect.andThen(pollIfRetained));
 
   return PortDiscovery.of({
+    configuredUrlProbing: portDiscoveryEnabled,
     scan: scanOnce,
     subscribe,
     retain,
@@ -1266,6 +1272,7 @@ export const layer = Layer.effect(PortDiscovery, make);
 
 /** A scanner that tracks nothing, for tests that build provider runners without a host. */
 export const layerTest = Layer.mock(PortDiscovery)({
+  configuredUrlProbing: false,
   trackAgent: () => () => undefined,
   watchAgentCommandStops: () => Effect.void,
 });

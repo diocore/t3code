@@ -3453,7 +3453,9 @@ export const layerWsRpc = (
               yield* Queue.offer(queue, {
                 servers: initial,
                 scannedAt: initialScannedAt,
-                configuredUrlProbing: true,
+                ...(portDiscovery.configuredUrlProbing
+                  ? { configuredUrlProbing: true as const }
+                  : {}),
               });
               yield* portDiscovery.subscribe(
                 { configuredUrls, initialSnapshot: initial },
@@ -3463,7 +3465,9 @@ export const layerWsRpc = (
                     yield* Queue.offer(queue, {
                       servers,
                       scannedAt,
-                      configuredUrlProbing: true,
+                      ...(portDiscovery.configuredUrlProbing
+                        ? { configuredUrlProbing: true as const }
+                        : {}),
                     });
                   }),
               );

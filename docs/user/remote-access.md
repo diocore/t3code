@@ -359,16 +359,18 @@ apps.
 
 ### Local servers
 
-The browser lists ports held by processes your terminals and agents started.
-T3 Code reads which process holds each port and never connects to it, so a
-listed port opens as `http://localhost:<port>` and might not be a web page. For
-an HTTPS server or a specific path, set the **Preview URL** on the project
-script that starts it; T3 Code checks that address and opens it as written.
-
-To stop listing ports, set `T3CODE_PORT_DISCOVERY=0` in the environment that
-starts the T3 Code server, such as
+Local server discovery and configured preview URL probing are disabled by
+default. To list ports held by processes your terminals and agents started, set
+`T3CODE_PORT_DISCOVERY=1` in the environment that starts the T3 Code server,
+such as
 [`service.env`](./background-service.md#configure-the-service-environment) for
-the background service, and restart it. Script preview URLs still appear.
+the background service, and restart it.
+
+When enabled, T3 Code reads which process holds each port and never connects to
+it, so a listed port opens as `http://localhost:<port>` and might not be a web
+page. For an HTTPS server or a specific path, set the **Preview URL** on the
+project script that starts it; T3 Code checks that address and opens it as
+written.
 
 ### Browser host setup
 
