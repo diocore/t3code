@@ -13,6 +13,21 @@
       "command": "node scripts/setup-worktree.ts",
       "icon": "configure",
       "runOnWorktreeCreate": true
+    },
+    {
+      "name": "Deploy frontend",
+      "command": "vp run deploy:frontend",
+      "icon": "build"
+    },
+    {
+      "name": "Deploy backend (restarts server)",
+      "command": "vp run deploy:backend",
+      "icon": "build"
+    },
+    {
+      "name": "Deploy app (restarts desktop)",
+      "command": "vp run deploy:app",
+      "icon": "build"
     }
   ]
 }
