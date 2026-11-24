@@ -122,6 +122,20 @@ describe("Antigravity Auto", () => {
     expect(
       shouldSkipAntigravityPermissions({
         runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: "/worktree",
+      }),
+    ).toBe(true);
+    expect(
+      shouldSkipAntigravityPermissions({
+        runtimeMode: "full-access",
+        interactionMode: "plan",
+        cwd: "/worktree",
+      }),
+    ).toBe(false);
+    expect(
+      shouldSkipAntigravityPermissions({
+        runtimeMode: "full-access",
         maxRuntimeMode: "full-access",
         cwd: "/worktree",
       }),
@@ -225,6 +239,88 @@ describe("Antigravity Auto", () => {
       }
     },
   );
+});
+
+describe("Antigravity Plan", () => {
+  const request = (
+    kind: EffectAcpSchema.ToolKind,
+    rawInput?: Record<string, unknown>,
+  ): EffectAcpSchema.RequestPermissionRequest => ({
+    sessionId: "session-1",
+    toolCall: {
+      toolCallId: "call-1",
+      title: "Tool call",
+      kind,
+      rawInput,
+      locations: [{ path: "/workspace/hello.txt" }],
+    },
+    options: [
+      { optionId: "allow", name: "Allow", kind: "allow_once" },
+      { optionId: "deny", name: "Deny", kind: "reject_once" },
+    ],
+  });
+  const runtimeModes = ["full-access", "auto-accept-edits", "auto", "approval-required"] as const;
+
+  it.each(runtimeModes)("refuses edits in %s", (runtimeMode) => {
+    for (const kind of ["edit", "delete", "move"] as const) {
+      expect(
+        antigravityPermissionDisposition(
+          { runtimeMode, interactionMode: "plan", cwd: "/workspace" },
+          request(kind),
+        ),
+      ).toBe("deny");
+    }
+  });
+
+  it.each(runtimeModes)("asks before commands and other actions in %s", (runtimeMode) => {
+    for (const kind of ["execute", "fetch", "other"] as const) {
+      expect(
+        antigravityPermissionDisposition(
+          { runtimeMode, interactionMode: "plan", cwd: "/workspace" },
+          request(kind),
+        ),
+      ).toBe("ask");
+    }
+  });
+
+  it("refuses commands when approvals are off", () => {
+    expect(
+      antigravityPermissionDisposition(
+        {
+          runtimeMode: "full-access",
+          interactionMode: "plan",
+          cwd: "/workspace",
+          approvalPolicy: "never",
+        },
+        request("execute"),
+      ),
+    ).toBe("deny");
+  });
+
+  it.each(runtimeModes)("answers reads and T3 MCP calls as outside Plan in %s", (runtimeMode) => {
+    for (const call of [
+      request("read"),
+      request("search"),
+      request("think"),
+      request("execute", { ServerName: "t3-code", ToolName: "t3_thread_read" }),
+    ]) {
+      const policy = { runtimeMode, cwd: "/workspace" };
+      expect(antigravityPermissionDisposition({ ...policy, interactionMode: "plan" }, call)).toBe(
+        antigravityPermissionDisposition({ ...policy, interactionMode: "default" }, call),
+      );
+    }
+  });
+
+  it("leaves Default unchanged", () => {
+    for (const kind of ["edit", "execute"] as const) {
+      expect(
+        antigravityPermissionDisposition(
+          { runtimeMode: "full-access", interactionMode: "default", cwd: "/workspace" },
+          request(kind),
+        ),
+      ).toBe("allow");
+    }
+  });
 });
 
 describe("applyAntigravityAcpModelSelection", () => {
