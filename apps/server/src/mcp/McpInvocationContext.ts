@@ -253,6 +253,9 @@ export const hiddenWithoutForge = (): boolean => {
   return scope?.forge !== false;
 };
 
+/** `McpSchema.EnabledWhen` for tools agents replace with the `gh` CLI. */
+export const hiddenAlways = (): boolean => false;
+
 export type McpCapabilityError<C extends McpCapability> = C extends "preview"
   ? PreviewAutomationUnavailableError
   : McpCapabilityUnavailableError;

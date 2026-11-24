@@ -1954,15 +1954,10 @@ it.effect(
         expect(childTools).toContain("link_pull_request");
         expect(childTools).not.toContain("watch_pull_request");
         expect(childTools).not.toContain("unwatch_pull_request");
-        expect(parentTools).toEqual(
-          expect.arrayContaining([
-            "pull_request_read",
-            "pull_request_review",
-            "pull_request_merge",
-            "ci_logs",
-            "ci_rerun",
-          ]),
-        );
+        expect(parentTools).toEqual(expect.arrayContaining(["pull_request_create"]));
+        expect(parentTools.filter((name) => name.startsWith("ci_"))).toEqual([]);
+        expect(parentTools).not.toContain("pull_request_read");
+        expect(parentTools).not.toContain("pull_request_merge");
         const noForgeTools = yield* listedTools("noForgeToken");
         expect(noForgeTools).toEqual(
           expect.arrayContaining(["link_pull_request", "watch_pull_request"]),

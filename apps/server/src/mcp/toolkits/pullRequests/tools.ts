@@ -652,7 +652,7 @@ const ReadPullRequestTool = Tool.make("pull_request_read", {
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, true)
-  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenWithoutForge);
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenAlways);
 
 const ListPullRequestsTool = Tool.make("pull_request_list", {
   description: "List PRs in this thread's repository, recently updated first.",
@@ -673,7 +673,7 @@ const ListPullRequestsTool = Tool.make("pull_request_list", {
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, true)
-  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenWithoutForge);
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenAlways);
 
 const CreatePullRequestTool = Tool.make("pull_request_create", {
   description: "Push this thread's branch, then open its PR and link it, or return its open PR.",
@@ -728,7 +728,7 @@ const UpdatePullRequestTool = Tool.make("pull_request_update", {
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, true)
-  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenWithoutForge);
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenAlways);
 
 const RespondToPullRequestTool = Tool.make("pull_request_respond", {
   description:
@@ -748,7 +748,7 @@ const RespondToPullRequestTool = Tool.make("pull_request_respond", {
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, true)
-  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenWithoutForge);
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenAlways);
 
 export const ReviewLineComment = Schema.Struct({
   path: TrimmedNonEmptyString,
@@ -781,7 +781,7 @@ const ReviewPullRequestTool = Tool.make("pull_request_review", {
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, true)
-  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenWithoutForge);
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenAlways);
 
 const MergePullRequestTool = Tool.make("pull_request_merge", {
   description:
@@ -810,7 +810,7 @@ const MergePullRequestTool = Tool.make("pull_request_merge", {
   .annotate(Tool.Destructive, true)
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, true)
-  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenWithoutForge);
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenAlways);
 
 export const CheckLogsResult = Schema.Struct({
   ...PullRequestIdentity,
@@ -858,7 +858,7 @@ const CheckLogsTool = Tool.make("ci_logs", {
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, true)
-  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenWithoutForge);
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenAlways);
 
 const RerunChecksTool = Tool.make("ci_rerun", {
   description: "Re-run a PR's failing checks, or one named check.",
@@ -875,7 +875,7 @@ const RerunChecksTool = Tool.make("ci_rerun", {
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, true)
-  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenWithoutForge);
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenAlways);
 
 export const PullRequestsToolkit = Toolkit.make(
   LinkPullRequestTool,
