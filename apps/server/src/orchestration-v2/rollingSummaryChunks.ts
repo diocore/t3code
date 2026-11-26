@@ -98,12 +98,19 @@ export function planSummaryChunks(input: {
   return chunks;
 }
 
+// `claude -p --json-schema` counts its StructuredOutput round as a turn without a second API request.
+export const summaryRequestCount = (turns: number) => Math.max(1, turns - 1);
+
 /** Lowers the ratio when a request held fewer chars per token than assumed; never raises it. */
 export function calibrateCharsPerToken(
   charsPerToken: number,
-  observed: { readonly promptChars: number; readonly promptTokens: number; readonly turns: number },
+  observed: {
+    readonly promptChars: number;
+    readonly promptTokens: number;
+    readonly requests: number;
+  },
 ): number {
-  const perRequestTokens = observed.promptTokens / Math.max(1, observed.turns);
+  const perRequestTokens = observed.promptTokens / observed.requests;
   const contentTokens = perRequestTokens - CLI_OVERHEAD_TOKENS;
   if (contentTokens <= 0) return charsPerToken;
   return Math.max(

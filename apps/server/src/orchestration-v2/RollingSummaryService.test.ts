@@ -190,6 +190,7 @@ const harness = Effect.fn("harness")(function* (input: {
   const backgroundAttempts = yield* Queue.unbounded<void>();
   const calls: Array<ContextSummaryGenerationInput> = [];
   const warnings: Array<unknown> = [];
+  const chunkLogs: Array<unknown> = [];
   let dispatches = 0;
   const tracer = Tracer.make({
     span(options) {
@@ -208,7 +209,7 @@ const harness = Effect.fn("harness")(function* (input: {
     ((request: ContextSummaryGenerationInput) =>
       Effect.succeed({
         sections: sections(`through ${request.lastRunOrdinal}`),
-        usage: { promptTokens: 120_000, outputTokens: 6_000, turns: 2 },
+        usage: { promptTokens: 60_000, outputTokens: 6_000, turns: 2 },
       }));
   const repositoryLayer = Layer.effect(
     ThreadContextSummaries.ThreadContextSummaryRepository,
@@ -265,6 +266,12 @@ const harness = Effect.fn("harness")(function* (input: {
       [
         Logger.make((entry) => {
           if (entry.logLevel === "Warn") warnings.push(entry.message);
+          if (
+            entry.logLevel === "Info" &&
+            Array.isArray(entry.message) &&
+            entry.message[0] === "rolling summary chunk"
+          )
+            chunkLogs.push(entry.message[1]);
         }),
       ],
       {
@@ -288,6 +295,7 @@ const harness = Effect.fn("harness")(function* (input: {
     repository,
     calls,
     warnings,
+    chunkLogs,
     dispatches: () => dispatches,
     send: (event: OrchestrationV2DomainEvent) => Queue.offer(events, event),
     nextWrite: Queue.take(repositoryWrites),
@@ -355,6 +363,19 @@ describe("RollingSummaryService", () => {
           { firstRunOrdinal: 1, lastRunOrdinal: 2, prior: null },
           { firstRunOrdinal: 3, lastRunOrdinal: 3, prior: "through 2" },
         ]);
+        const chunkUsage = {
+          threadId,
+          turns: 2,
+          requests: 1,
+          promptTokens: 60_000,
+          outputTokens: 6_000,
+          charsPerToken: expect.any(Number),
+        };
+        expect(test.chunkLogs).toEqual([
+          { ...chunkUsage, firstRunOrdinal: 1, lastRunOrdinal: 2 },
+          { ...chunkUsage, firstRunOrdinal: 3, lastRunOrdinal: 3 },
+        ]);
+        expect(test.warnings).toEqual([]);
         expect(test.calls[0]!.modelSelection.model).toBe("claude-haiku-5-5");
         expect(test.calls[0]!.transcript).toContain("=== RUN 2 ===\n[USER]\nrequest 2");
         const latest = Option.getOrThrow(yield* test.repository.latest(threadId));
@@ -466,6 +487,41 @@ describe("RollingSummaryService", () => {
         expect(test.calls[0]!.transcript).toContain("=== RUN 3 ===");
       }),
     ),
+  );
+
+  it.effect.each([
+    { turns: 2, promptTokens: 100_000, perRequestTokens: 100_000, isOverBudget: true },
+    { turns: 3, promptTokens: 180_000, perRequestTokens: 90_000, isOverBudget: false },
+  ])(
+    "counts the structured-output turn as part of one request ($turns turns)",
+    ({ turns, promptTokens, perRequestTokens, isOverBudget }) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const test = yield* harness({
+            data: longHistory(),
+            summarize: (request) =>
+              Effect.succeed({
+                sections: sections(`through ${request.lastRunOrdinal}`),
+                usage: { promptTokens, outputTokens: 6_000, turns },
+              }),
+          });
+          yield* test.send(runUpdated(test.fixture.data.runs[2]!));
+          expect(yield* test.nextWrite).toBe("insert:2");
+          expect(yield* test.nextWrite).toBe("insert:3");
+
+          expect(test.chunkLogs).toContainEqual(
+            expect.objectContaining({ turns, requests: turns - 1, promptTokens }),
+          );
+          expect(test.warnings).toEqual(
+            isOverBudget
+              ? Array.from({ length: 2 }, () => [
+                  "rolling summary request exceeded its prompt budget",
+                  { threadId, perRequestTokens, charsPerToken: expect.any(Number) },
+                ])
+              : [],
+          );
+        }),
+      ),
   );
 
   it.effect("persists nothing and never compacts when the summary call fails", () =>
