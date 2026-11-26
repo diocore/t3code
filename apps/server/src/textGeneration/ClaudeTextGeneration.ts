@@ -60,6 +60,8 @@ const CLAUDE_INVESTIGATION_ALLOWED = [
 ].join(",");
 // Denies override allows; block git --output/-o because allowed trailing args can otherwise write anywhere.
 const CLAUDE_INVESTIGATION_DENIED = ["Bash(git * --output*)", "Bash(git * -o *)"].join(",");
+const CONTEXT_SUMMARY_SYSTEM_PROMPT =
+  "You summarize a coding-agent session into the requested JSON structure. Follow the instructions in the user message exactly.";
 
 const NO_SESSION_PERSISTENCE = "--no-session-persistence";
 // Claude Code before 2.0.63 exits with this on stderr; those runs retry without the flag.
@@ -335,6 +337,9 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
               ]
             : ["--tools", ""]),
           ...(investigate ? ["--setting-sources", "user"] : []),
+          ...(operation === "generateContextSummary"
+            ? ["--setting-sources", "", "--system-prompt", CONTEXT_SUMMARY_SYSTEM_PROMPT]
+            : []),
           "--disable-slash-commands",
           ...(noSessionPersistence ? [NO_SESSION_PERSISTENCE] : []),
           // managed-mcp.json already isolates servers and makes Claude reject this flag.

@@ -11,6 +11,7 @@ import {
   TextGenerationError,
   ThreadId,
 } from "@t3tools/contracts";
+import { estimateTextTokens } from "@t3tools/provider-core/server/handoffBudget";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -112,6 +113,76 @@ describe("ThreadCompactionService", () => {
       assert.isFalse(after.providerSessions.some((session) => session.id === previousSessionId));
       assert.isFalse(after.messages.some((message) => message.text.trim() === "/compact"));
     }),
+  );
+
+  it.live("counts the smallest context across every session, not the summary-seeded one", () =>
+    firstTurnThenCompress(
+      {
+        name: "thread-wide-baseline",
+        threadId: ThreadId.make("thread:compress-thread-wide-baseline"),
+        tokenUsageByRunOrdinal: {
+          1: { usedTokens: 40_000, maxTokens: 200_000 },
+          3: { usedTokens: 90_000, maxTokens: 200_000 },
+        },
+      },
+      ({ settle, send, compaction, capturedTurns }) =>
+        Effect.gen(function* () {
+          const afterFirstCompress = yield* settle();
+          yield* send("second");
+          yield* settle();
+          const secondTurn = (yield* Ref.get(capturedTurns)).at(-1)!;
+          assert.equal(secondTurn.runOrdinal, 3);
+          assert.equal(
+            secondTurn.providerThreadId,
+            afterFirstCompress.thread.activeProviderThreadId,
+          );
+          const { runId } = yield* compaction.compress(afterFirstCompress.thread.id);
+          const after = yield* settle();
+          assert.deepEqual(
+            after.providerTurns
+              .filter((turn) => turn.providerThreadId === secondTurn.providerThreadId)
+              .map((turn) => turn.tokenUsage?.usedTokens),
+            [90_000],
+          );
+          const handoff = after.contextHandoffs.find(
+            (candidate) => candidate.targetRunId === runId,
+          )!;
+          const secondCompaction = after.turnItems.find(
+            (item) => item.type === "compaction" && item.runId === runId,
+          );
+          assert.deepInclude(secondCompaction, {
+            status: "completed",
+            afterTokenCount: estimateTextTokens(handoff.summaryText) + 40_000,
+          });
+          const conversationTurn = after.providerTurns[0]!;
+          const conversationProviderThread = after.providerThreads.find(
+            (candidate) => candidate.id === conversationTurn.providerThreadId,
+          )!;
+          const subagentProviderThread = {
+            ...conversationProviderThread,
+            id: ProviderThreadId.make(`${conversationTurn.providerThreadId}:subagent`),
+            ownerNodeId: conversationTurn.nodeId,
+          };
+          assert.equal(
+            Orchestrator.sessionBaselineTokens(
+              {
+                ...after,
+                providerThreads: [...after.providerThreads, subagentProviderThread],
+                providerTurns: [
+                  ...after.providerTurns,
+                  {
+                    ...conversationTurn,
+                    providerThreadId: subagentProviderThread.id,
+                    tokenUsage: { ...conversationTurn.tokenUsage!, usedTokens: 5_000 },
+                  },
+                ],
+              },
+              conversationProviderThread,
+            ),
+            40_000,
+          );
+        }),
+    ),
   );
 
   describe("never moves the boundary", () => {
