@@ -2262,6 +2262,96 @@ it("renders automatic compaction as one live divider that finishes with its reas
   expect(container.textContent).not.toContain("Compacting before");
 });
 
+it("labels a /compress by its state and offers Undo only while it is undoable", async () => {
+  setup();
+  const fixture = makeStreamingTimelineFixture();
+  const prompt = fixture.visibleTurnItems[3]!;
+  const assistant = fixture.visibleTurnItems[5]!;
+  if (prompt.item.type !== "user_message" || assistant.item.type !== "assistant_message") {
+    throw new Error("Expected streaming fixture messages");
+  }
+  const promptItem = prompt.item;
+  const compaction = {
+    ...assistant,
+    item: {
+      ...assistant.item,
+      type: "compaction" as const,
+      driver: null,
+      method: "compress" as const,
+      beforeTokenCount: 180_000,
+    },
+  };
+  type CompressState = "running" | "completed" | "undone" | "failed";
+  const entries = (state: CompressState) =>
+    deriveTimelineEntriesFromVisibleTurnItems({
+      visibleTurnItems: [
+        { ...prompt, item: { ...promptItem, text: "/compress keep the API notes" } },
+        {
+          ...compaction,
+          item: {
+            ...compaction.item,
+            status: state === "undone" ? "cancelled" : state === "failed" ? "failed" : state,
+            ...(state === "completed" || state === "undone"
+              ? { afterTokenCount: 21_000, summary: "The thread moved the sidebar to a drawer." }
+              : {}),
+          },
+        },
+      ],
+      optimisticMessages: [],
+    });
+  const onUndoCompress = vi.fn();
+  const props = baseProps();
+  const ui = (state: CompressState, undoable: boolean) => (
+    <MessagesTimeline
+      {...props}
+      timelineEntries={entries(state)}
+      isWorking={state === "running"}
+      activeTurnStartedAt={fixture.time(5)}
+      latestRun={{
+        runId: fixture.runId,
+        status: state === "running" ? "preparing" : "completed",
+        startedAt: fixture.time(5),
+        completedAt: state === "running" ? null : fixture.time(9),
+      }}
+      compressUndoRunId={undoable ? fixture.runId : null}
+      onUndoCompress={onUndoCompress}
+    />
+  );
+  const container = document.createElement("div");
+  container.style.cssText = "height: 1200px; width: 900px; display: flex; flex-direction: column;";
+  await using screen = await render(ui("running", false), { container });
+  await expect
+    .element(screen.getByRole("separator", { name: "Compressing context…" }))
+    .toBeVisible();
+
+  await screen.rerender(ui("completed", true));
+  await expect
+    .element(screen.getByRole("separator", { name: "Context compressed 180K → 21K tokens" }))
+    .toBeVisible();
+  const undo = screen.getByRole("button", { name: "Undo" });
+  await expect.element(undo).toBeVisible();
+  await screen.getByRole("button", { name: "Show summary" }).click();
+  await expect.element(screen.getByText("The thread moved the sidebar to a drawer.")).toBeVisible();
+  await undo.click();
+  expect(onUndoCompress).toHaveBeenCalledOnce();
+
+  await screen.rerender(ui("completed", false));
+  await expect
+    .element(screen.getByRole("separator", { name: "Context compressed 180K → 21K tokens" }))
+    .toBeVisible();
+  await expect.element(screen.getByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+
+  await screen.rerender(ui("undone", false));
+  await expect.element(screen.getByRole("separator", { name: "Compress undone" })).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+  await expect
+    .element(screen.getByRole("button", { name: "Show summary" }))
+    .not.toBeInTheDocument();
+
+  await screen.rerender(ui("failed", false));
+  await expect.element(screen.getByRole("separator", { name: "Compress failed" })).toBeVisible();
+});
+
 function TimelineChangedFilesCard() {
   const [expanded, setExpanded] = useState(true);
   return (

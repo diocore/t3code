@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   detectComposerTrigger,
+  parseCompressComposerCommand,
   parseSideChatCommand,
   serializeComposerFileLink,
 } from "./composerTrigger.ts";
@@ -178,5 +179,19 @@ describe("parseSideChatCommand", () => {
     expect(parseSideChatCommand("/sidebar")).toBeNull();
     expect(parseSideChatCommand("/btwx")).toBeNull();
     expect(parseSideChatCommand("ask /side later")).toBeNull();
+  });
+});
+
+describe("parseCompressComposerCommand", () => {
+  it.each([
+    ["/compress", { focus: "" }],
+    ["/compress keep auth", { focus: "keep auth" }],
+    [" /COMPRESS ", { focus: "" }],
+    ["/compress\nkeep the plan\n", { focus: "keep the plan" }],
+    ["/compressx", null],
+    ["/recap", null],
+    ["please /compress", null],
+  ])("%j", (text, expected) => {
+    expect(parseCompressComposerCommand(text)).toEqual(expected);
   });
 });

@@ -19,6 +19,10 @@
       "types": "./src/server/attachmentPrompt.ts",
       "import": "./src/server/attachmentPrompt.ts"
     },
+    "./server/contextSummary": {
+      "types": "./src/server/contextSummary.ts",
+      "import": "./src/server/contextSummary.ts"
+    },
     "./server/compatibility": {
       "types": "./src/server/compatibility.ts",
       "import": "./src/server/compatibility.ts"

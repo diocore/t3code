@@ -321,6 +321,10 @@ earlier messages, and the thread marks where it began with **New session**.
 Earlier messages and diffs stay in the thread. Dismiss the notice above the
 composer to keep the current session instead.
 
+In Claude threads, send `/compress` to start a fresh session that begins with a
+summary of the thread, so it keeps what came before. See
+[compress into a fresh session](./providers-claude.md#compress-into-a-fresh-session).
+
 On web and desktop, turn on **Context window** in **Settings → Appearance →
 Thread details** to see context usage in the thread details card. It appears
 once the provider reports usage.

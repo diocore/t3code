@@ -73,6 +73,7 @@ import {
   MessageSquareDashedIcon,
   LinkIcon,
   MessageSquareIcon,
+  Minimize2Icon,
   PaletteIcon,
   RotateCcwIcon,
   SettingsIcon,
@@ -86,6 +87,8 @@ import {
   WorkflowIcon,
 } from "lucide-react";
 import { openThreadFind } from "./chat/threadFindStore";
+import { useThreadCompress } from "./chat/useThreadCompress";
+import { compressLineageListed } from "@t3tools/shared/claudeCompaction";
 import { dispatchPreviewAction } from "./preview/previewActionBus";
 import { previewBridge } from "./preview/previewBridge";
 import {
@@ -519,6 +522,7 @@ function OpenCommandPaletteDialog(props: {
   const activeThreadServerConfig = useServerConfigs().get(
     activeThread?.environmentId ?? ("" as EnvironmentId),
   );
+  const activeThreadCompress = useThreadCompress(activeThread?.environmentId ?? null);
   const canShareActiveThreadWithGuest = useAtomValue(
     canShareWithGuestAtom(activeThread?.environmentId ?? ("" as EnvironmentId)),
   );
@@ -1547,6 +1551,34 @@ function OpenCommandPaletteDialog(props: {
       icon: <UserPlusIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
         openGuestShareDialog(threadRef);
+      },
+    });
+  }
+
+  if (
+    activeThread !== null &&
+    activeThreadCompress.canCompress &&
+    threadHasStarted(activeThread) &&
+    compressLineageListed(activeThread.lineage) &&
+    providersByEnvironment
+      .get(activeThread.environmentId)
+      ?.find(
+        (provider) =>
+          provider.instanceId ===
+          (activeThread.runtime?.providerInstanceId ?? activeThread.modelSelection.instanceId),
+      )?.driver === "claudeAgent"
+  ) {
+    const threadId = activeThread.id;
+    actionItems.push({
+      kind: "action",
+      value: "action:compress-context",
+      searchTerms: ["compress", "compact", "summary", "context", "fresh session", "tokens"],
+      title: gt("Compress context"),
+      description: gt("Continue in a fresh session seeded with a summary of this thread"),
+      icon: <Minimize2Icon className={ITEM_ICON_CLASS} />,
+      shortcutCommand: "thread.compress",
+      run: async () => {
+        await activeThreadCompress.compressThread(threadId);
       },
     });
   }

@@ -5,6 +5,7 @@ import {
   OrchestrationSearchThreadsInput,
   OrchestrationThreadSearchMatch,
   OrchestrationV2ThreadForkSourcePoint,
+  OrchestrationV2CompressThreadInput,
   OrchestrationV2ContextTransfer,
   TrimmedNonEmptyString,
   ModelSelection,
@@ -27,6 +28,7 @@ import { McpSchema, Tool, Toolkit } from "effect/ai";
 
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTaskService from "../../../scheduledTasks/ScheduledTaskService.ts";
+import * as ThreadCompactionService from "../../../orchestration-v2/ThreadCompactionService.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
@@ -167,17 +169,20 @@ const ThreadConfigureTool = Tool.make("t3_thread_configure", {
 const ThreadTransferTool = Tool.make("t3_thread_transfer", {
   ...commandTool,
   description:
-    "Move context between threads. Omit `threadId` for this thread. fork: copy it from `sourcePoint` (default latest stable run) into a new thread with the same setup; no turn runs yet. merge_back: merge it from `sourcePoint` into a related `targetThreadId` in the same project. status: its context transfers.",
+    "Move context between threads. Omit `threadId` for this thread. fork: copy it from `sourcePoint` (default latest stable run) into a new thread with the same setup; no turn runs yet. merge_back: merge it from `sourcePoint` into a related `targetThreadId` in the same project. status: its context transfers. compress: replace an idle Claude thread's provider session with a fresh one seeded with a summary; `focus` says what to keep. undo_compress: restore the previous session before the next message.",
   parameters: Schema.Struct({
-    action: Schema.Literals(["fork", "merge_back", "status"]),
+    action: Schema.Literals(["fork", "merge_back", "status", "compress", "undo_compress"]),
     environmentId: OrchestratorMcpEnvironmentTarget,
     threadId: Schema.optional(ThreadId),
     sourcePoint: Schema.optional(OrchestrationV2ThreadForkSourcePoint),
     targetThreadId: Schema.optional(ThreadId),
     title: Schema.optional(TrimmedNonEmptyString),
+    focus: Schema.optional(OrchestrationV2CompressThreadInput.fields.focus),
   }),
   success: Schema.Union([
     Schema.Struct({ sequence: NonNegativeInt, targetThreadId: ThreadId }),
+    Schema.Struct({ sequence: NonNegativeInt, runId: RunId }),
+    Schema.Struct({ sequence: NonNegativeInt }),
     Schema.Struct({
       transfers: Schema.Array(
         Schema.Struct({
@@ -189,6 +194,7 @@ const ThreadTransferTool = Tool.make("t3_thread_transfer", {
       ),
     }),
   ]),
+  dependencies: [...commandTool.dependencies, ThreadCompactionService.ThreadCompactionService],
 }).annotate(Tool.Destructive, true);
 
 const ThreadSearchTool = Tool.make("t3_thread_search", {

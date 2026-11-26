@@ -628,6 +628,12 @@ type MessagesTimelineRowContent =
       failed?: true;
       /** The provider's reason, when a failed compaction gave one. */
       failure?: string;
+      /** T3's /compress, with the run Undo targets and its summary preview. */
+      compress?: {
+        readonly runId: RunId;
+        readonly completed: boolean;
+        readonly summary?: string;
+      };
     }
   | {
       kind: "message";
@@ -2023,7 +2029,20 @@ export function deriveMessagesTimelineRows(
       const title = compactionTitle(compactionRunId, timelineEntry.id);
       const reason = compactionRunId == null ? undefined : compactionRuns.get(compactionRunId);
       const failed = compaction?.type === "compaction" && compaction.status === "failed";
-      const failure = failed ? compaction.summary?.trim() || undefined : undefined;
+      const compress =
+        compaction?.type === "compaction" &&
+        compaction.method === "compress" &&
+        compactionRunId != null
+          ? {
+              runId: compactionRunId,
+              completed: compaction.status === "completed",
+              ...(compaction.status === "completed" && compaction.summary?.trim()
+                ? { summary: compaction.summary }
+                : {}),
+            }
+          : undefined;
+      const failure =
+        failed && compress === undefined ? compaction.summary?.trim() || undefined : undefined;
       const compacted =
         !(active && reason) &&
         compaction?.type === "compaction" &&
@@ -2038,6 +2057,7 @@ export function deriveMessagesTimelineRows(
         ...(compacted ? { compacted: true } : {}),
         ...(failed ? { failed: true } : {}),
         ...(failure ? { failure } : {}),
+        ...(compress ? { compress } : {}),
         createdAt: timelineEntry.createdAt,
         label:
           active && reason ? resolve(IDLE_COMPACTING_LABELS[reason]) : timelineEntry.entry.label,

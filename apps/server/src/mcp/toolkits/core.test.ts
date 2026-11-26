@@ -13,6 +13,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  OrchestrationV2CompressThreadError,
   RunId,
   ScheduledTaskError,
   ScheduledTask,
@@ -47,6 +48,7 @@ import * as ServerConfig from "../../config.ts";
 import * as ProviderAdapterRegistry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
+import * as ThreadCompaction from "../../orchestration-v2/ThreadCompactionService.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import type * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ThreadSearch from "../../orchestration-v2/ThreadSearch.ts";
@@ -92,6 +94,7 @@ const layerThreadToolkit = McpHttpServer.layerThreadToolkit.pipe(
   Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
   Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
   Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
+  Layer.provide(Layer.mock(ThreadCompaction.ThreadCompactionService)({})),
 );
 
 const threadId = ThreadId.make("mcp-core-thread");
@@ -916,6 +919,7 @@ it.effect("search names the calling thread, so an agent can tell its own match a
         Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
         Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
         Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
+        Layer.provide(Layer.mock(ThreadCompaction.ThreadCompactionService)({})),
       ),
     ),
   ),
@@ -1138,6 +1142,7 @@ it.effect.each([
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
+        Layer.provide(Layer.mock(ThreadCompaction.ThreadCompactionService)({})),
         Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
         Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
         Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
@@ -1177,6 +1182,7 @@ it.effect("run_scheduled_task_now reports why a started run failed to dispatch",
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
+        Layer.provide(Layer.mock(ThreadCompaction.ThreadCompactionService)({})),
         Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
         Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
         Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
@@ -1649,6 +1655,74 @@ it.effect(
           Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
           Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
           Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
+        ),
+      ),
+    );
+  },
+);
+
+it.effect(
+  "t3_thread_transfer compress swaps an idle thread and reports busy on a running one",
+  () => {
+    const compressCalls: Array<{ readonly threadId: string; readonly focus: string | undefined }> =
+      [];
+    return Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      const call = (args: Record<string, unknown>) =>
+        server
+          .callTool({ name: "t3_thread_transfer", arguments: args })
+          .pipe(
+            Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+            Effect.provideService(McpSchema.McpServerClient, client),
+          );
+
+      const idle = yield* call({ action: "compress", threadId: "idle-thread", focus: "keep auth" });
+      expect(idle.isError).toBe(false);
+      expect(idle.structuredContent).toEqual({ sequence: 4, runId: "run-compress" });
+      expect(compressCalls).toEqual([{ threadId: "idle-thread", focus: "keep auth" }]);
+
+      const busy = yield* call({ action: "compress" });
+      expect(declaredFailure(busy)).toEqual({
+        _tag: "OrchestratorMcpFailure",
+        code: "invalid_request",
+        message: "This thread has a turn in progress; /compress runs only when the thread is idle.",
+      });
+
+      const undone = yield* call({ action: "undo_compress", threadId: "idle-thread" });
+      expect(undone.structuredContent).toEqual({ sequence: 5 });
+    }).pipe(
+      Effect.provide(
+        McpHttpServer.layerThreadToolkit.pipe(
+          Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+          Layer.provide(NodeCrypto.layer),
+          Layer.provide(
+            Layer.mock(ThreadManagement.ThreadManagementService)({
+              getThreadShell: (id) => Effect.succeed(McpToolAccessTestkit.liveThreadShell(id)),
+              getProjectThreadRecords: ({ threadId: id }) =>
+                Effect.succeed({
+                  thread: { ...McpToolAccessTestkit.liveThreadShell(id), id },
+                } as never),
+            }),
+          ),
+          Layer.provide(
+            Layer.mock(ThreadCompaction.ThreadCompactionService)({
+              compress: (id, options) =>
+                id === threadId
+                  ? Effect.fail(
+                      new OrchestrationV2CompressThreadError({ threadId: id, reason: "busy" }),
+                    )
+                  : Effect.sync(() => {
+                      compressCalls.push({ threadId: id, focus: options?.focus });
+                      return { runId: RunId.make("run-compress"), sequence: 4 };
+                    }),
+              undoCompress: () => Effect.succeed({ sequence: 5 }),
+            }),
+          ),
+          Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
+          Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
+          Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
+          Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
+          Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
         ),
       ),
     );

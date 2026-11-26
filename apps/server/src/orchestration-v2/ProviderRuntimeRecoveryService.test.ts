@@ -25,6 +25,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { restartContinuationRun } from "./RestartContinuation.ts";
 
 it.effect("expires orphaned runtime requests before command readiness", () => {
   const threadId = ThreadId.make("thread_recovery_requests");
@@ -935,6 +936,7 @@ it.effect(
         "provider-turn.steer",
         "provider-turn.restart",
         "runtime-request.respond",
+        "thread-compress.summarize",
       ]);
       const events = committedInput?.events ?? [];
       assert.deepEqual(
@@ -1699,4 +1701,187 @@ it.effect("leaves delegated tasks to their own child threads after process loss"
     );
     assert.deepEqual(noted, [`subagent ${nativeSubagentId}`]);
   }).pipe(Effect.provide(layer));
+});
+
+it.effect("cancels a /compress still preparing at restart, with its compaction item", () => {
+  const threadId = ThreadId.make("thread_compress_restart");
+  const runId = RunId.make("run_compress_restart");
+  const attemptId = RunAttemptId.make("attempt_compress_restart");
+  const rootNodeId = NodeId.make("node_compress_restart");
+  let committedInput: Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0] | null =
+    null;
+  const projection = {
+    thread: {
+      id: threadId,
+      archivedAt: null,
+      deletedAt: null,
+      settledOverride: null,
+      snoozedUntil: null,
+      lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+      forkedFrom: null,
+    },
+    runtimeRequests: [],
+    providerSessions: [],
+    providerThreads: [],
+    providerTurns: [],
+    runs: [
+      {
+        id: runId,
+        status: "preparing",
+        startedAt: null,
+        rootNodeId,
+        activeAttemptId: attemptId,
+        userMessageId: MessageId.make("message_compress_restart"),
+        queuePosition: null,
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        compress: true,
+      },
+    ],
+    attempts: [{ id: attemptId, runId, rootNodeId, status: "pending", startedAt: null }],
+    nodes: [{ id: rootNodeId, runId, status: "pending", startedAt: null }],
+    subagents: [],
+    messages: [],
+    turnItems: [
+      {
+        id: TurnItemId.make("turn_item_compress_restart"),
+        type: "compaction",
+        runId,
+        nodeId: rootNodeId,
+        status: "running",
+        driver: "claudeAgent",
+        method: "compress",
+        completedAt: null,
+      },
+    ],
+  } as unknown as OrchestrationV2ThreadProjection;
+  const layer = ProviderRuntimeRecovery.layer.pipe(
+    Layer.provide(ServerSettings.layerTest()),
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getRecoveryThreadIds: () => Effect.succeed([threadId]),
+          getRuntimeRecoveryProjection: () => Effect.succeed(projection),
+          getMessagesById: () => Effect.succeed(new Map()),
+          getThreadRecords: () => Effect.succeed(projection),
+        }),
+        Layer.mock(EventSink.EventSinkV2)({
+          commitCommand: (input) => {
+            committedInput = input;
+            return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
+          },
+          writeWithEffects: () => Effect.succeed([]),
+        }),
+        IdAllocator.layer,
+        Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({
+          runRecoveryOnce: Effect.succeed(false),
+        }),
+        Layer.mock(EffectOutbox.EffectOutboxV2)({
+          listByCommandId: () => Effect.succeed([]),
+          reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
+        }),
+      ),
+    ),
+  );
+
+  return Effect.gen(function* () {
+    const summary =
+      yield* (yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService).reconcile("startup");
+    assert.equal(summary.terminalizedRuns, 1);
+    const events = committedInput?.events ?? [];
+    const run = events.find((event) => event.type === "run.updated");
+    assert.deepInclude(run?.type === "run.updated" ? run.payload : null, {
+      status: "cancelled",
+      startedAt: null,
+    });
+    assert.notProperty(run?.type === "run.updated" ? run.payload : {}, "freshContext");
+    const compaction = events.find(
+      (event) => event.type === "turn-item.updated" && event.payload.type === "compaction",
+    );
+    assert.equal(
+      compaction?.type === "turn-item.updated" ? compaction.payload.status : null,
+      "cancelled",
+    );
+  }).pipe(Effect.provide(layer));
+});
+
+it("never continues the session a completed /compress replaced", () => {
+  const threadId = ThreadId.make("thread_compress_continue");
+  const driver = ProviderDriverKind.make("claudeAgent");
+  const instanceId = ProviderInstanceId.make("claudeAgent");
+  const sessionId = ProviderSessionId.make("session_compress_continue");
+  const previousProviderThreadId = ProviderThreadId.make("provider_thread_before_compress");
+  const freshProviderThreadId = ProviderThreadId.make("provider_thread_after_compress");
+  const at = (minute: number) => DateTime.makeUnsafe(`2026-11-26T10:${minute}:00.000Z`);
+  const earlierRun = {
+    id: RunId.make("run_before_compress"),
+    ordinal: 1,
+    providerInstanceId: instanceId,
+    providerThreadId: previousProviderThreadId,
+    activeAttemptId: RunAttemptId.make("attempt_before_compress"),
+    status: "completed",
+    requestedAt: at(10),
+    startedAt: at(10),
+    completedAt: at(11),
+  };
+  const settled = {
+    thread: {
+      id: threadId,
+      providerInstanceId: instanceId,
+      archivedAt: null,
+      deletedAt: null,
+      settledOverride: null,
+      snoozedUntil: null,
+      lineage: { parentThreadId: null, relationshipToParent: null },
+      forkedFrom: null,
+    },
+    runs: [earlierRun],
+    providerThreads: [
+      {
+        id: previousProviderThreadId,
+        appThreadId: threadId,
+        ownerNodeId: null,
+        driver,
+        providerInstanceId: instanceId,
+        providerSessionId: sessionId,
+        nativeThreadRef: { driver, nativeId: "native-before-compress", strength: "strong" },
+        status: "idle",
+        pendingBackgroundTasks: [
+          { kind: "command", taskId: "task:child", description: "agent", parentTaskId: "task:1" },
+        ],
+      },
+    ],
+    providerSessions: [{ id: sessionId, driver, providerInstanceId: instanceId, status: "ready" }],
+    providerTurns: [],
+    runtimeRequests: [],
+    turnItems: [],
+  } as unknown as OrchestrationV2ThreadProjection;
+  assert.equal(restartContinuationRun(settled, at(30))?.id, earlierRun.id);
+
+  const compressRun = {
+    ...earlierRun,
+    id: RunId.make("run_compress"),
+    ordinal: 2,
+    providerThreadId: freshProviderThreadId,
+    activeAttemptId: RunAttemptId.make("attempt_compress"),
+    requestedAt: at(20),
+    startedAt: at(20),
+    completedAt: at(21),
+    compress: true,
+    freshContext: true,
+  };
+  const compressed = {
+    ...settled,
+    runs: [earlierRun, compressRun],
+    providerThreads: [
+      ...settled.providerThreads,
+      {
+        ...settled.providerThreads[0]!,
+        id: freshProviderThreadId,
+        nativeThreadRef: null,
+        status: "not_loaded",
+        pendingBackgroundTasks: [],
+      },
+    ],
+  } as unknown as OrchestrationV2ThreadProjection;
+  assert.isUndefined(restartContinuationRun(compressed, at(30)));
 });

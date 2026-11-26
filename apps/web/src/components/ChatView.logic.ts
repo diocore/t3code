@@ -1545,6 +1545,8 @@ export function planComposerTurn(input: {
   readonly dispatchMode: ComposerDispatchMode;
   /** The turn starts a new provider session, so it neither compacts first nor steers. */
   readonly freshContext: boolean;
+  /** Auto-compress runs first; the message queues behind it instead of compacting. */
+  readonly compressBeforeSend?: boolean;
 }) {
   const isFirstMessage =
     !input.sendQueuesBehindSetup && (!input.isServerThread || input.activeMessageCount === 0);
@@ -1553,8 +1555,10 @@ export function planComposerTurn(input: {
   // A stale Claude session compacts before this message so the turn does not re-read the
   // old history. The message queues behind the /compact run, since steering into it is
   // rejected.
+  const compressBeforeSend = input.compressBeforeSend === true;
   const compactBeforeSend =
     !input.freshContext &&
+    !compressBeforeSend &&
     input.resumeCompactionTokens !== null &&
     !input.keepFullHistory &&
     !COMPACT_COMMAND_PATTERN.test(input.messageText);
@@ -1578,11 +1582,14 @@ export function planComposerTurn(input: {
         : input.plainProjectBaseBranch || "HEAD",
     compactBeforeSend,
     turnDispatchMode:
-      compactBeforeSend || (input.sendQueuesBehindSetup && dispatchMode !== "steer")
+      compactBeforeSend ||
+      compressBeforeSend ||
+      (input.sendQueuesBehindSetup && dispatchMode !== "steer")
         ? ("queue" as const)
         : dispatchMode,
     shouldQueueBehindActiveRun:
       compactBeforeSend ||
+      compressBeforeSend ||
       input.sendQueuesBehindSetup ||
       (input.phase === "running" && dispatchMode === "queue"),
   };

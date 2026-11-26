@@ -208,6 +208,14 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       label: "environment-data:orchestration:force-stop-thread",
       tag: ORCHESTRATION_V2_WS_METHODS.forceStopThread,
     }),
+    compressThread: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:orchestration:compress-thread",
+      tag: ORCHESTRATION_V2_WS_METHODS.compressThread,
+    }),
+    undoThreadCompress: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:orchestration:undo-thread-compress",
+      tag: ORCHESTRATION_V2_WS_METHODS.undoThreadCompress,
+    }),
     turnItem: (target: {
       readonly environmentId: EnvironmentId;
       readonly input: OrchestrationV2GetTurnItemInput;

@@ -716,6 +716,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("claude context compaction idle cache tokens usage summary resume")],
   },
   {
+    id: "auto-compress",
+    title: msg("Auto-compress (alpha)"),
+    to: "/settings/providers",
+    scope: "environment-defaults",
+    searchTerms: [msg("claude haiku rolling summary compress fresh session idle compaction")],
+  },
+  {
     id: "auto-settle-merged-threads",
     title: msg("Auto-settle merged threads"),
     to: "/settings/threads",

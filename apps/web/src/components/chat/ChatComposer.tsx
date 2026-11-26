@@ -423,6 +423,8 @@ export interface ChatComposerProps {
   sideChatDisabledReason?: string | null;
   /** Arms a fresh session for the next message; absent where `/clear` is unavailable. */
   onFreshSession?: (() => void) | undefined;
+  /** `/compress` runs T3's compress on this thread. */
+  compressAvailable?: boolean | undefined;
   environmentUnavailable: {
     readonly label: string;
     readonly connection: EnvironmentConnectionPresentation;
@@ -1258,6 +1260,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     sideChatAvailable: props.sideChatAvailable === true,
     sideChatDisabledReason: props.sideChatDisabledReason ?? null,
     freshSessionAvailable: props.onFreshSession !== undefined,
+    compressAvailable: props.compressAvailable === true,
     compactSlashCommandAvailable,
     selectedProvider,
     selectedProviderSkills,
@@ -2135,6 +2138,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         }
         return;
       }
+      if (item.command === "compress") {
+        const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "/compress ", {
+          expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
+        });
+        if (applied) setComposerHighlightedItemId(null);
+        return;
+      }
       if (item.command === "side" || item.command === "btw") {
         if (props.sideChatDisabledReason) return;
         const applied = applyPromptReplacement(
@@ -2793,6 +2803,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     usageLimits: props.onUsageLimitsCommand !== undefined,
     codexFeedback: selectedProvider === "codex" && multipleModelSelections === null,
     freshSession: props.onFreshSession !== undefined,
+    compress: props.compressAvailable === true,
     interactionModeToggle: planModeUiEnabled && multipleModelSelections === null,
   });
   const replyBannerItems: readonly ComposerBannerStackItem[] = replyTo

@@ -62,6 +62,10 @@ import * as McpAppModelContext from "../../mcpApps/McpAppModelContext.ts";
 import * as PreviewAgentActivity from "../../preview/PreviewAgentActivity.ts";
 import * as RunExecutionService from "../RunExecutionService.ts";
 import * as RunFinalizationService from "../RunFinalizationService.ts";
+import * as RollingSummaryService from "../RollingSummaryService.ts";
+import * as ThreadCompactionService from "../ThreadCompactionService.ts";
+import * as ThreadContextSummaries from "../../persistence/ThreadContextSummaries.ts";
+import * as TextGeneration from "../../textGeneration/TextGeneration.ts";
 import * as ThreadTitleRegenerationService from "../ThreadTitleRegenerationService.ts";
 import * as RuntimePolicy from "../RuntimePolicy.ts";
 import * as WorkspaceFolders from "../../workspace/WorkspaceFolders.ts";
@@ -303,9 +307,14 @@ export function layerWithRegistry<Error>(
     readonly providerInstances?: Partial<
       ProviderInstanceRegistry.ProviderInstanceRegistry["Service"]
     >;
+    /** Server settings over the harness defaults, such as `autoCompress`. */
+    readonly serverSettings?: Parameters<typeof ServerSettings.layerTest>[0];
+    /** The rolling summary's model calls, for /compress. */
+    readonly textGeneration?: Partial<TextGeneration.TextGeneration["Service"]>;
   } = {},
 ): Layer.Layer<
   | Orchestrator.OrchestratorV2
+  | ThreadCompactionService.ThreadCompactionService
   | EffectOutbox.EffectOutboxV2
   | EffectWorker.OrchestrationEffectWorkerV2
   | EventSink.EventSinkV2
@@ -354,6 +363,7 @@ export function layerWithRegistry<Error>(
       ServerSettings.layerTest(
         {
           responseStreamingMode: "turn",
+          ...options.serverSettings,
           ...(options.continueThreadsAfterServerUpdate === undefined
             ? {}
             : { continueThreadsAfterServerUpdate: options.continueThreadsAfterServerUpdate }),
@@ -589,9 +599,26 @@ export function layerWithRegistry<Error>(
           ),
         )
       : Layer.empty;
+  const layerThreadCompactionProvided = ThreadCompactionService.layer.pipe(
+    Layer.provide(
+      RollingSummaryService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            ThreadContextSummaries.layer.pipe(Layer.provide(layerDatabase)),
+            Layer.mock(TextGeneration.TextGeneration)(options.textGeneration ?? {}),
+          ),
+        ),
+        Layer.provideMerge(
+          Layer.mergeAll(layerOrchestratorProvided, layerStores, layerServerSettings),
+        ),
+      ),
+    ),
+    Layer.provide(NodeCrypto.layer),
+  );
   const layerEffectExecutorProvided = EffectWorker.layerExecutor.pipe(
     Layer.provide(
       Layer.mergeAll(
+        layerThreadCompactionProvided,
         layerRunFinalizationServiceProvided,
         layerCheckpointRollbackServiceProvided,
         layerProviderSessionManagerProvided,
@@ -611,6 +638,7 @@ export function layerWithRegistry<Error>(
   const layerReplayRuntime = Layer.mergeAll(
     layerEffectOutboxProvided,
     layerOrchestratorProvided,
+    layerThreadCompactionProvided,
     layerProviderSessionManagerProvided,
     layerEffectWorkerProvided,
     layerEventSinkProvided,

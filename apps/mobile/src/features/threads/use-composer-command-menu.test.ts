@@ -127,6 +127,37 @@ describe("mobile slash commands", () => {
     expect(build(true, false)).toEqual([]);
   });
 
+  it("offers T3's /compress only where offered, leaving Cursor's own /compress", () => {
+    const cursor = {
+      driver: ProviderDriverKind.make("cursor"),
+      slashCommands: [{ name: "compress", description: "Compress the conversation" }],
+    };
+    const build = (offersCompress: boolean, atMessageStart = true) =>
+      buildComposerSlashCommandItems({
+        query: "compr",
+        atMessageStart,
+        hasThread: true,
+        allowInteractionMode: true,
+        offersCompress,
+        selectedProviderStatus: offersCompress
+          ? { driver: ProviderDriverKind.make("claudeAgent"), slashCommands: [] }
+          : cursor,
+      });
+    expect(build(true).map((item) => item.id)).toEqual(["cmd:compress"]);
+    expect(build(false).map((item) => item.id)).toEqual(["pcmd:compress"]);
+    expect(build(true, false)).toEqual([]);
+    const item = build(true)[0];
+    if (!item) throw new Error("Expected T3's /compress");
+    expect(
+      resolveComposerCommandSelection({
+        draftMessage: "/compr",
+        trigger: { rangeStart: 0, rangeEnd: 6 },
+        item,
+        allowInteractionMode: true,
+      }),
+    ).toEqual({ text: "/compress ", cursor: 10, interactionMode: null });
+  });
+
   it("applies the T3 plan command for supported providers", () => {
     const items = buildComposerSlashCommandItems({
       query: "plan",

@@ -22,6 +22,7 @@ const state = vi.hoisted(() => ({
     readonly dispose: () => void;
   } | null,
   start: vi.fn(),
+  compress: vi.fn(),
   metadata: vi.fn(),
   runtime: vi.fn(),
   interaction: vi.fn(),
@@ -115,6 +116,10 @@ vi.mock("./threads", async () => {
     },
     environmentThreadDetails: { stateAtom: () => Atom.make(null) },
   };
+});
+vi.mock("./orchestration", async () => {
+  const Effect = await import("effect/Effect");
+  return { orchestrationEnvironment: { compressThread: state.command(Effect, state.compress) } };
 });
 vi.mock("./git", async () => ({
   gitEnvironment: {
@@ -242,6 +247,7 @@ beforeEach(() => {
   appAtomRegistry.set(editingQueuedMessageIdsAtom, {});
   for (const command of [
     state.start,
+    state.compress,
     state.metadata,
     state.runtime,
     state.interaction,
@@ -679,6 +685,41 @@ describe("compaction before a queued send", () => {
     expect(state.start).toHaveBeenCalledOnce();
     expect(state.start.mock.calls[0]?.[0].input).toMatchObject(compactTurn);
     expect(remaining()).toEqual([queued]);
+  });
+});
+
+describe("auto-compress before a queued send", () => {
+  const compressInput = {
+    environmentId: "secondary",
+    input: { threadId: "thread", trigger: "automatic", creationSource: "mobile" },
+  };
+
+  it("compresses ahead of the message, which queues behind it", async () => {
+    setOperateGrant("secondary", true);
+    state.compress.mockResolvedValueOnce(
+      AsyncResult.success({ runId: "compress-run", sequence: 2 }),
+    );
+    await state.manager.enqueue(message({ compressBeforeSend: true, dispatchMode: "queue" }));
+    await runDrain();
+    expect(state.compress.mock.calls.map(([call]) => call)).toEqual([compressInput]);
+    expect(state.start.mock.calls.map(([call]) => call.input)).toEqual([
+      expect.objectContaining({ commandId: "command", dispatchMode: "queue" }),
+    ]);
+    expect(remaining()).toEqual([]);
+  });
+
+  it("still sends the message when the server refuses the compress", async () => {
+    setOperateGrant("secondary", true);
+    state.compress.mockResolvedValueOnce(
+      AsyncResult.failure(Cause.fail(new Error("This thread does not need compressing yet."))),
+    );
+    await state.manager.enqueue(message({ compressBeforeSend: true, dispatchMode: "queue" }));
+    await runDrain();
+    expect(state.compress).toHaveBeenCalledOnce();
+    expect(state.start.mock.calls.map(([call]) => call.input)).toEqual([
+      expect.objectContaining({ commandId: "command", dispatchMode: "queue" }),
+    ]);
+    expect(remaining()).toEqual([]);
   });
 });
 

@@ -89,6 +89,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { applyClaudePromptEffortPrefix } from "@t3tools/shared/model";
 import { compareSemverVersions } from "@t3tools/shared/semver";
 import {
+  CLAUDE_AUTO_COMPACT_RESERVE_TOKENS,
   CLAUDE_RESUME_COMPACTION_COMPACT_ANSWER,
   CLAUDE_RESUME_COMPACTION_NEVER_ANSWER,
   formatClaudeResumeCompactionQuestion,
@@ -277,11 +278,6 @@ function claudePromptCacheTtlMs(
   if (cacheCreation.ephemeral_5m_input_tokens > 0) return 5 * 60_000;
   return undefined;
 }
-
-// Claude caps the window at the model's context, so a setting at or above it never applies.
-// Below that, Claude compacts 33,000 tokens short of the window: Claude Code 2.1.305's
-// getContextUsage reports a 150,000 window as a 117,000 threshold, for every catalog model.
-const CLAUDE_AUTO_COMPACT_RESERVE_TOKENS = 33_000;
 
 // Claude Code's isEnvTruthy.
 function isClaudeEnvTruthy(value: string | undefined): boolean {

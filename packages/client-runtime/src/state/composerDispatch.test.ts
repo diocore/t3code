@@ -83,3 +83,35 @@ it("treats only the commands the composer runs itself as local", () => {
     ).toBe(false);
   }
 });
+
+it("runs /compress locally only where the thread takes it, and holds steers behind a compress run", () => {
+  const draft = {
+    holdsOnlyText: true,
+    sideChat: false,
+    usageLimits: false,
+    codexFeedback: false,
+    freshSession: false,
+  };
+  expect(composerRunsDraftLocally({ ...draft, compress: true, text: "/compress keep auth" })).toBe(
+    true,
+  );
+  // Cursor runs its own /compress, and Claude its own /recap.
+  expect(composerRunsDraftLocally({ ...draft, compress: false, text: "/compress" })).toBe(false);
+  expect(composerRunsDraftLocally({ ...draft, text: "/compress" })).toBe(false);
+  expect(composerRunsDraftLocally({ ...draft, compress: true, text: "/recap" })).toBe(false);
+  expect(
+    composerRunsDraftLocally({ ...draft, compress: true, holdsOnlyText: false, text: "/compress" }),
+  ).toBe(false);
+
+  const steeringBlocked = (run: { readonly userMessageId: string; readonly compress?: true }) =>
+    compactionBlocksSteering({
+      compactCommandIsActive: false,
+      compactionRunning: false,
+      steersDuringCompaction: true,
+      run,
+      messages: [{ id: "user", text: "/compress" }],
+    });
+  expect(steeringBlocked({ userMessageId: "user", compress: true })).toBe(true);
+  // A native /compress turn, as Cursor runs one, keeps today's steering.
+  expect(steeringBlocked({ userMessageId: "user" })).toBe(false);
+});

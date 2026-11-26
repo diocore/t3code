@@ -214,6 +214,55 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
       ),
   );
 
+  it.effect("writes context summaries at the selected effort and reports the CLI's usage", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({
+          type: "result",
+          num_turns: 2,
+          usage: {
+            input_tokens: 10,
+            cache_read_input_tokens: 5_984,
+            cache_creation_input_tokens: 110_000,
+            output_tokens: 6_200,
+          },
+          structured_output: {
+            goal: "Ship the consumer fix",
+            userRequests: ["Use the staging cluster"],
+            decisions: [],
+            constraints: [],
+            filesTouched: [],
+            openTodos: [],
+            currentState: "Tests pass",
+            unresolvedErrors: [],
+          },
+        }),
+        cwdMustNotBe: process.cwd(),
+        argsMustNotContain: "--effort low",
+        stdinMustContain: "NEW TRANSCRIPT CHUNK (runs 4-7):\n=== RUN 4 ===",
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const generated = yield* textGeneration.generateContextSummary({
+            priorSummary: null,
+            transcript: "=== RUN 4 ===\n[USER]\nfix it",
+            firstRunOrdinal: 4,
+            lastRunOrdinal: 7,
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("claudeAgent"),
+              model: SYNTHETIC_CLAUDE_CAPABLE_MODEL,
+            },
+          });
+          expect(generated.sections.userRequests).toEqual(["Use the staging cluster"]);
+          expect(generated.usage).toEqual({
+            promptTokens: 115_994,
+            outputTokens: 6_200,
+            turns: 2,
+          });
+        }),
+    ),
+  );
+
   it.effect("sends thread title instructions to the provider prompt", () =>
     withFakeClaudeEnv(
       {

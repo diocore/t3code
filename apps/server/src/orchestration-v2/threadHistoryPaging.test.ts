@@ -850,6 +850,47 @@ describe("threadHistoryPaging", () => {
     ).toBe(2_097_152);
   });
 
+  it("blanks a ready /compress summary but keeps other ready handoffs whole", () => {
+    const projection = makeProjection(Array.from({ length: 5 }, (_, index) => makeRow(index)));
+    const handoff = (id: string, extra: Record<string, unknown>) => ({
+      id,
+      threadId: THREAD,
+      targetRunId: "run-1",
+      fromProviderThreadIds: [],
+      toProviderThreadId: "provider-thread-1",
+      coveredRunOrdinals: { from: 1, to: 1 },
+      strategy: "manual_context",
+      status: "ready",
+      summaryMessageId: null,
+      summaryText: "s".repeat(90_000),
+      createdByProviderInstanceId: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+      ...extra,
+    });
+    const bounded = buildBoundedThreadProjection({
+      projection: {
+        ...projection,
+        contextHandoffs: [
+          handoff("handoff-compress", { compressedSummary: true }),
+          handoff("handoff-plain", {}),
+        ],
+      } as unknown as typeof projection,
+      snapshotSequence: 9,
+    });
+
+    expect(
+      bounded.projection.contextHandoffs.map((entry) => [entry.id, entry.summaryText.length]),
+    ).toEqual([
+      ["handoff-compress", 0],
+      ["handoff-plain", 90_000],
+    ]);
+    expect(bounded.projection.contextHandoffs[0]).toMatchObject({
+      status: "ready",
+      compressedSummary: true,
+    });
+  });
+
   it.each([40_000, 80_000])(
     "reserves pending question cards before visible history: %s bytes",
     (questionBytes) => {

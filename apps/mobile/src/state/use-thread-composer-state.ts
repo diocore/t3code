@@ -5,7 +5,11 @@ import * as Dialog from "../components/ui/Dialog";
 import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import { readEnvironmentScope } from "./session";
 import { useAtomValue } from "@effect/atom-react";
-import { compactBeforeSendTokens } from "@t3tools/client-runtime/state/context-window";
+import {
+  compactBeforeSendTokens,
+  compressBeforeSend as autoCompressBeforeSend,
+} from "@t3tools/client-runtime/state/context-window";
+import { compressLineageListed, compressUndoTarget } from "@t3tools/shared/claudeCompaction";
 import { threadRuntimeIsActive } from "@t3tools/client-runtime/state/shell";
 import type { ThreadCheckpointSummary } from "@t3tools/client-runtime/state/thread-checkpoints";
 import { threadSteersDuringCompaction } from "@t3tools/client-runtime/state/thread-workflows";
@@ -106,7 +110,11 @@ import {
   useComposerDraft,
   useComposerDraftSettings,
 } from "./use-composer-drafts";
-import { isClearComposerCommand, parseSideChatCommand } from "@t3tools/shared/composerTrigger";
+import {
+  isClearComposerCommand,
+  parseCompressComposerCommand,
+  parseSideChatCommand,
+} from "@t3tools/shared/composerTrigger";
 import { orchestrationV2WorktreePending } from "@t3tools/shared/orchestrationV2ThreadError";
 import {
   compactionBlocksSteering,
@@ -142,6 +150,7 @@ import { enqueueThreadOutboxMessage } from "./thread-outbox";
 import { dispatchingQueuedMessageIdsAtom, useThreadOutboxMessages } from "./use-thread-outbox";
 import { threadEnvironment } from "./threads";
 import { useAtomCommand } from "./use-atom-command";
+import { useThreadCompress } from "./use-thread-compress";
 
 const EMPTY_QUEUE_WORKFLOW_ATOM = Atom.make<null>(null).pipe(
   Atom.withLabel("mobile-thread-queue-workflow:empty"),
@@ -374,6 +383,29 @@ export function useThreadComposerState(input: {
         selectedDraft.interactionMode ?? selectedThread.interactionMode,
       )
     : null;
+  const threadCompress = useThreadCompress({
+    environmentId: selectedThreadShell?.environmentId ?? null,
+    supported: serverConfig?.environment.capabilities.threadCompress === true,
+  });
+  const projectedThread = selectedThreadProjection?.projection.thread;
+  const compressAvailable =
+    threadCompress.canCompress &&
+    selectedThreadCreation === null &&
+    selectedThread?.latestRun != null &&
+    projectedThread !== undefined &&
+    compressLineageListed(projectedThread.lineage) &&
+    serverConfig?.providers.find(
+      (provider) => provider.instanceId === projectedThread.providerInstanceId,
+    )?.driver === "claudeAgent" &&
+    selectedProvider?.driver === "claudeAgent" &&
+    pendingHandoff === null;
+  const compressUndoRunId =
+    threadCompress.canCompress && selectedThreadProjection !== null
+      ? compressUndoTarget(selectedThreadProjection.projection)
+      : null;
+  const onUndoCompress = () => {
+    if (selectedThreadShell) void threadCompress.undoThreadCompress(selectedThreadShell.id);
+  };
   const canSwitchThreadProvider = threadAllowsProviderSwitch({
     thread: selectedThreadShell,
     projection: selectedThreadProjection?.projection,
@@ -799,6 +831,21 @@ export function useThreadComposerState(input: {
       clearComposerDraftContent(threadKey);
       return null;
     }
+    const compressCommand =
+      beforeDispatch === undefined &&
+      compressAvailable &&
+      attachments.length === 0 &&
+      draft.context === undefined
+        ? parseCompressComposerCommand(text)
+        : null;
+    if (compressCommand !== null) {
+      clearComposerDraftContent(threadKey);
+      await threadCompress.compressThread(thread.id, {
+        focus: compressCommand.focus,
+        onCompact: () => void onSendCommand("/compact"),
+      });
+      return null;
+    }
 
     if (modelUnavailable) {
       alertModelUnavailable();
@@ -907,6 +954,21 @@ export function useThreadComposerState(input: {
       followUpDispatchMode === null &&
       appAtomRegistry.get(fullHistoryThreadKeysAtom)[threadKey] !== true &&
       resumeCompactionTokens(modelSelection, text, metadata.createdAt) !== null;
+    const compressBeforeSend =
+      !freshContext &&
+      !compactBeforeSend &&
+      followUpDispatchMode === null &&
+      compressAvailable &&
+      selectedThreadProjection !== null &&
+      serverConfig != null &&
+      autoCompressBeforeSend({
+        projection: selectedThreadProjection.projection,
+        settings: serverConfig.settings,
+        text,
+        threadIdle:
+          !activeThreadBusy && !runlessWorkActive && selectedThreadQueuedMessages.length === 0,
+        now: metadata.createdAt,
+      });
     const messageId = MessageId.make(metadata.messageId);
     onWillEnqueue?.();
     clearThreadComposerError(threadKey);
@@ -926,9 +988,11 @@ export function useThreadComposerState(input: {
       ),
       ...(compactBeforeSend
         ? { compactBeforeSend, dispatchMode: "queue" as const }
-        : followUpDispatchMode === null
-          ? {}
-          : { dispatchMode: followUpDispatchMode }),
+        : compressBeforeSend
+          ? { compressBeforeSend, dispatchMode: "queue" as const }
+          : followUpDispatchMode === null
+            ? {}
+            : { dispatchMode: followUpDispatchMode }),
       ...(freshContext ? { freshContext: true } : {}),
       createdAt: metadata.createdAt,
     });
@@ -1088,6 +1152,9 @@ export function useThreadComposerState(input: {
     ),
     providerSubagentStatus,
     isCompacting,
+    compressAvailable,
+    compressUndoRunId,
+    onUndoCompress,
     compactBeforeSend:
       compactTokens === null || selectedThreadKey === null
         ? null

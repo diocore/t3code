@@ -13,7 +13,14 @@ import {
   runRanAfter,
   usageLimitBlockedRun,
 } from "@t3tools/shared/orchestrationV2ThreadError";
-import { threadIssueKeysEqual } from "@t3tools/contracts";
+import {
+  isListedThreadLineage,
+  OrchestrationV2CompressRefusal,
+  OrchestrationV2CompressThreadError,
+  ProviderDriverKind,
+  threadIssueKeysEqual,
+} from "@t3tools/contracts";
+import { compressUndoTarget } from "@t3tools/shared/claudeCompaction";
 import { canonicalizeGitCafePullRequestUrl } from "@t3tools/source-control-definitions/registry";
 import { threadPullRequestsOf } from "../sourceControl/threadPullRequests.ts";
 import {
@@ -330,6 +337,16 @@ export class OrchestratorProviderSelectionBusyError extends Schema.TaggedError<O
   }
 }
 
+export class OrchestratorCompressRefusedError extends Schema.TaggedError<OrchestratorCompressRefusedError>()(
+  "OrchestratorCompressRefusedError",
+  { commandId: CommandId, threadId: ThreadId, reason: OrchestrationV2CompressRefusal },
+) {
+  override get message(): string {
+    return new OrchestrationV2CompressThreadError({ threadId: this.threadId, reason: this.reason })
+      .message;
+  }
+}
+
 const isOrchestratorDispatchError = Schema.is(OrchestratorDispatchError);
 
 /** The ceiling refusal under however many dispatch errors wrapped it on the way out. */
@@ -396,6 +413,7 @@ export const OrchestratorV2Error = Schema.Union([
   OrchestratorThreadAboveModeLimitError,
   OrchestratorProviderSelectionBusyError,
   OrchestratorRuntimeModeAboveCeilingError,
+  OrchestratorCompressRefusedError,
 ]);
 export type OrchestratorV2Error = typeof OrchestratorV2Error.Type;
 
@@ -701,6 +719,10 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.interrupt.unresponsive":
     case "thread.stop":
     case "provider.switch":
+    case "thread.compress.start":
+    case "thread.compress.complete":
+    case "thread.compress.fail":
+    case "thread.compress.undo":
       return command.threadId;
     case "delegated_task.request":
     case "delegated_task.remote.request":
@@ -1511,6 +1533,19 @@ function conversationProviderThread(
       .toSorted((left, right) => (right.lastRunOrdinal ?? 0) - (left.lastRunOrdinal ?? 0))[0] ??
     active
   );
+}
+
+/** The session's smallest context: the system prompt and tools a fresh session starts with again. */
+function sessionBaselineTokens(
+  projection: Pick<OrchestrationV2ThreadProjection, "providerTurns">,
+  providerThreadId: OrchestrationV2ProviderThread["id"],
+): number {
+  const usedTokens = projection.providerTurns.flatMap((turn) =>
+    turn.providerThreadId === providerThreadId && turn.tokenUsage !== undefined
+      ? [turn.tokenUsage.usedTokens]
+      : [],
+  );
+  return usedTokens.length === 0 ? 0 : Math.min(...usedTokens);
 }
 
 /** Wakes and fresh starts act on the active session; a message continues the conversation. */
@@ -5708,7 +5743,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         preparingRuns.length === 0
           ? []
           : (yield* loadProjectionForCommand(command, ["turnItems"], {
-              turnItemTypes: ["command_execution"],
+              turnItemTypes: ["command_execution", "compaction"],
               turnItemRunIds: preparingRuns.map((run) => run.id),
             })).turnItems;
       for (const run of projection.runs.filter((candidate) => activeRunIds.has(candidate.id))) {
@@ -5719,6 +5754,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           providerInstanceId: run.providerInstanceId,
           occurredAt: now,
           payload: { ...run, status: "cancelled", queuePosition: null, completedAt: now },
+        });
+      }
+      for (const item of preparationItems) {
+        if (item.type !== "compaction" || item.method !== "compress" || item.status !== "running")
+          continue;
+        const run = preparingRuns.find((candidate) => candidate.id === item.runId)!;
+        yield* emitEvent({
+          type: "turn-item.updated",
+          threadId: command.threadId,
+          runId: run.id,
+          nodeId: item.nodeId ?? undefined,
+          providerInstanceId: run.providerInstanceId,
+          occurredAt: now,
+          payload: { ...item, status: "cancelled", completedAt: now, updatedAt: now },
         });
       }
       for (const run of preparingRuns) {
@@ -7625,9 +7674,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
     const output = outputSchema === undefined ? {} : { outputSchema };
+    const joinedRunId =
+      dispatchMode.type === "steer_active" || dispatchMode.type === "restart_active"
+        ? dispatchMode.targetRunId
+        : undefined;
     if (
-      (freshContext || command.outputSchema !== undefined) &&
-      (dispatchMode.type === "steer_active" || dispatchMode.type === "restart_active")
+      joinedRunId !== undefined &&
+      (freshContext ||
+        command.outputSchema !== undefined ||
+        projection.runs.some((run) => run.id === joinedRunId && run.compress === true))
     ) {
       dispatchMode = { type: "queue_after_active" };
     }
@@ -12932,6 +12987,666 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   // Ends each native subagent's record, its own thread's runless root turns, and the
   // subagents it started there, which a provider can record on that thread rather than its parent's.
+  const compressRefusal = (
+    command: Extract<
+      OrchestrationV2InternalCommand,
+      { readonly type: `thread.compress.${string}` }
+    >,
+    reason: OrchestrationV2CompressRefusal,
+  ) =>
+    new OrchestratorCompressRefusedError({
+      commandId: command.commandId,
+      threadId: command.threadId,
+      reason,
+    });
+
+  /** Sessions a compress would end, or the refusal that keeps them. */
+  const compressReleasableSessions = Effect.fn("Orchestrator.compressReleasableSessions")(
+    function* (
+      command: Extract<
+        OrchestrationV2InternalCommand,
+        { readonly type: "thread.compress.start" | "thread.compress.complete" }
+      >,
+      projection: OrchestrationV2ThreadProjection,
+      providerThread: OrchestrationV2ProviderThread,
+    ) {
+      if (
+        pendingForkTransferForThread(projection) !== undefined ||
+        pendingMergeBackTransfersForThread(projection).length > 0
+      )
+        return yield* compressRefusal(command, "transfer-pending");
+      const sessions = sessionsReleasedByFreshContext(projection, providerThread);
+      for (const session of sessions) {
+        if (yield* sessionHasBackgroundWork(session, projection.providerThreads))
+          return yield* compressRefusal(command, "background-work");
+      }
+      return sessions;
+    },
+  );
+
+  const readCompressItems = (threadId: ThreadId, runId: RunId) =>
+    projectionStore
+      .getThreadRecords(threadId, ["turnItems", "contextHandoffs"], {
+        turnItemTypes: ["compaction", "user_message"],
+        turnItemRunIds: [runId],
+      })
+      .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+
+  const dispatchCompressStart = Effect.fn("Orchestrator.dispatchCompressStart")(function* (
+    command: Extract<OrchestrationV2InternalCommand, { readonly type: "thread.compress.start" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) {
+    const projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+    const providerThread = conversationProviderThread(projection);
+    if (
+      projection.thread.archivedAt !== null ||
+      projection.thread.deletedAt !== null ||
+      !isListedThreadLineage(projection.thread.lineage) ||
+      providerThread === undefined ||
+      providerThread.driver !== "claudeAgent" ||
+      providerThread.providerInstanceId !== projection.thread.providerInstanceId
+    )
+      return yield* compressRefusal(command, "unsupported");
+    if (
+      projection.runs.some((run) => isActiveRun(run) || run.status === "queued") ||
+      projection.runtimeRequests.some((request) => request.status === "pending")
+    )
+      return yield* compressRefusal(command, "busy");
+    const boundary = contextBoundaryOrdinal(projection);
+    if (
+      !projection.runs.some(
+        (run) =>
+          run.ordinal >= boundary &&
+          run.compress !== true &&
+          run.startedAt !== null &&
+          (run.status === "completed" || run.status === "interrupted" || run.status === "failed"),
+      )
+    )
+      return yield* compressRefusal(command, "nothing-to-compress");
+    yield* compressReleasableSessions(command, projection, providerThread);
+
+    const now = yield* DateTime.now;
+    const ordinal = nextRunOrdinal(projection);
+    const runId = idAllocator.derive.run({ threadId: command.threadId, ordinal });
+    const attemptId = idAllocator.derive.runAttempt({ runId, attemptOrdinal: 1 });
+    const rootNodeId = idAllocator.derive.rootNode({ runId });
+    const text = command.focus ? `/compress ${command.focus}` : "/compress";
+    const run: OrchestrationV2Run = {
+      id: runId,
+      threadId: command.threadId,
+      ordinal,
+      providerInstanceId: providerThread.providerInstanceId,
+      modelSelection: projection.thread.modelSelection,
+      providerThreadId: providerThread.id,
+      userMessageId: command.messageId,
+      rootNodeId,
+      activeAttemptId: attemptId,
+      status: "preparing",
+      queuePosition: null,
+      requestedAt: now,
+      startedAt: null,
+      completedAt: null,
+      checkpointId: null,
+      contextHandoffId: null,
+      compress: true,
+    };
+    const userItemOrdinal = yield* nextTurnItemOrdinal(projection);
+    const itemBase = {
+      threadId: command.threadId,
+      runId,
+      nodeId: rootNodeId,
+      providerThreadId: providerThread.id,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      title: null,
+      startedAt: now,
+      updatedAt: now,
+    } as const;
+    const beforeTokenCount =
+      projection.providerTurns
+        .flatMap((turn) =>
+          turn.providerThreadId === providerThread.id && turn.tokenUsage !== undefined
+            ? [turn.tokenUsage]
+            : [],
+        )
+        .toSorted((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0]
+        ?.usedTokens ?? providerThread.contextUsage?.usedTokens;
+    const emitEvent = emit(events, command);
+    const envelope = {
+      threadId: command.threadId,
+      runId,
+      nodeId: rootNodeId,
+      providerInstanceId: providerThread.providerInstanceId,
+      occurredAt: now,
+    } as const;
+    yield* emitEvent({ type: "run.created", ...envelope, payload: run });
+    yield* emitEvent({
+      type: "run-attempt.created",
+      ...envelope,
+      payload: {
+        id: attemptId,
+        runId,
+        attemptOrdinal: 1,
+        rootNodeId,
+        providerInstanceId: providerThread.providerInstanceId,
+        providerThreadId: providerThread.id,
+        providerTurnId: null,
+        reason: "initial",
+        status: "pending",
+        startedAt: null,
+        completedAt: null,
+      },
+    });
+    yield* emitEvent({
+      type: "node.updated",
+      ...envelope,
+      payload: {
+        id: rootNodeId,
+        threadId: command.threadId,
+        runId,
+        parentNodeId: null,
+        rootNodeId,
+        kind: "root_turn",
+        status: "pending",
+        countsForRun: true,
+        providerThreadId: providerThread.id,
+        providerTurnId: null,
+        nativeItemRef: null,
+        runtimeRequestId: null,
+        checkpointScopeId: null,
+        startedAt: null,
+        completedAt: null,
+      },
+    });
+    yield* emitEvent({
+      type: "message.updated",
+      ...envelope,
+      payload: {
+        createdBy: command.createdBy,
+        creationSource: command.creationSource,
+        id: command.messageId,
+        threadId: command.threadId,
+        runId,
+        nodeId: rootNodeId,
+        role: "user",
+        text,
+        attachments: [],
+        streaming: false,
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+    yield* emitEvent({
+      type: "turn-item.updated",
+      ...envelope,
+      payload: {
+        ...itemBase,
+        createdBy: command.createdBy,
+        creationSource: command.creationSource,
+        id: idAllocator.derive.userTurnItem({ messageId: command.messageId }),
+        ordinal: userItemOrdinal,
+        status: "completed",
+        completedAt: now,
+        type: "user_message",
+        messageId: command.messageId,
+        inputIntent: "turn_start",
+        text,
+        attachments: [],
+      },
+    });
+    yield* emitEvent({
+      type: "turn-item.updated",
+      ...envelope,
+      payload: {
+        ...itemBase,
+        id: idAllocator.derive.turnItemFromProviderItem({
+          driver: providerThread.driver,
+          nativeItemId: `compress:${runId}`,
+        }),
+        ordinal: userItemOrdinal + 1,
+        status: "running",
+        completedAt: null,
+        type: "compaction",
+        driver: providerThread.driver,
+        method: "compress",
+        ...(beforeTokenCount === undefined ? {} : { beforeTokenCount }),
+      },
+    });
+    yield* Ref.update(effects, (existing) => [
+      ...existing,
+      {
+        id: `effect:${command.commandId}:thread-compress.summarize:${runId}`,
+        commandId: command.commandId,
+        threadId: command.threadId,
+        request: { type: "thread-compress.summarize", runId },
+      } satisfies PendingOrchestrationEffectV2,
+    ]);
+  });
+
+  const preparingCompressRun = Effect.fn("Orchestrator.preparingCompressRun")(function* (
+    command: Extract<
+      OrchestrationV2InternalCommand,
+      { readonly type: "thread.compress.complete" | "thread.compress.fail" }
+    >,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+    const run = projection.runs.find((candidate) => candidate.id === command.runId);
+    if (run?.compress !== true) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Run ${command.runId} is not a compress run.`,
+      });
+    }
+    const { turnItems, contextHandoffs } = yield* readCompressItems(command.threadId, run.id);
+    const compaction = turnItems.find(
+      (item): item is Extract<OrchestrationV2TurnItem, { readonly type: "compaction" }> =>
+        item.type === "compaction" && item.method === "compress",
+    );
+    const userItem = turnItems.find(
+      (item): item is Extract<OrchestrationV2TurnItem, { readonly type: "user_message" }> =>
+        item.type === "user_message" && item.messageId === run.userMessageId,
+    );
+    return {
+      projection,
+      run,
+      compaction,
+      userItem,
+      contextHandoffs,
+      attempt: projection.attempts.find((candidate) => candidate.id === run.activeAttemptId),
+      rootNode: projection.nodes.find((candidate) => candidate.id === run.rootNodeId),
+    };
+  });
+
+  const dispatchCompressComplete = Effect.fn("Orchestrator.dispatchCompressComplete")(function* (
+    command: Extract<OrchestrationV2InternalCommand, { readonly type: "thread.compress.complete" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) {
+    const state = yield* preparingCompressRun(command, events);
+    const { projection, run, compaction, userItem, attempt, rootNode } = state;
+    const providerThread = projection.providerThreads.find(
+      (candidate) => candidate.id === run.providerThreadId,
+    );
+    if (
+      run.status !== "preparing" ||
+      providerThread === undefined ||
+      compaction === undefined ||
+      userItem === undefined ||
+      attempt === undefined ||
+      rootNode === undefined
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Run ${command.runId} is not compressing.`,
+      });
+    }
+    const sessionsToDetach = yield* compressReleasableSessions(command, projection, providerThread);
+    const now = yield* DateTime.now;
+    const adapter = yield* providerAdapters.get(providerThread.providerInstanceId).pipe(
+      Effect.mapError(
+        (cause) =>
+          new OrchestratorProviderAdapterError({
+            commandId: command.commandId,
+            providerInstanceId: providerThread.providerInstanceId,
+            cause,
+          }),
+      ),
+    );
+    const providerSessionId = yield* mapDispatchError(command)(
+      providerSessionIdFor({
+        adapter,
+        providerInstanceId: providerThread.providerInstanceId,
+        threadId: command.threadId,
+      }),
+    );
+    const freshProviderThreadId = idAllocator.derive.providerThread({
+      driver: adapter.driver,
+      nativeThreadId: `pending:${run.id}`,
+    });
+    const handoff = yield* contextHandoffService
+      .prepareCompressedSummary({
+        threadId: command.threadId,
+        targetRunId: run.id,
+        fromProviderThreadId: providerThread.id,
+        toProviderThreadId: freshProviderThreadId,
+        toProviderInstanceId: providerThread.providerInstanceId,
+        coveredRunOrdinals: command.coveredRunOrdinals,
+        summaryText: command.summaryText,
+        createdAt: now,
+      })
+      .pipe(mapDispatchError(command));
+    const freshProviderThread: OrchestrationV2ProviderThread = {
+      id: freshProviderThreadId,
+      driver: adapter.driver,
+      providerInstanceId: providerThread.providerInstanceId,
+      providerSessionId,
+      appThreadId: command.threadId,
+      ownerNodeId: null,
+      nativeThreadRef: null,
+      nativeConversationHeadRef: null,
+      status: "not_loaded",
+      firstRunOrdinal: run.ordinal,
+      lastRunOrdinal: run.ordinal,
+      handoffIds: [handoff.id],
+      forkedFrom: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const emitEvent = emit(events, command);
+    const envelope = {
+      threadId: command.threadId,
+      runId: run.id,
+      nodeId: rootNode.id,
+      providerInstanceId: run.providerInstanceId,
+      occurredAt: now,
+    } as const;
+    // The only place a compress writes freshContext, with the session that carries its summary:
+    // every other ending leaves the context boundary where it was.
+    yield* emitEvent({
+      type: "provider-thread.updated",
+      threadId: command.threadId,
+      driver: adapter.driver,
+      providerInstanceId: run.providerInstanceId,
+      occurredAt: now,
+      payload: freshProviderThread,
+    });
+    yield* emitEvent({ type: "context-handoff.updated", ...envelope, payload: handoff });
+    yield* emitEvent({
+      type: "run-attempt.updated",
+      ...envelope,
+      payload: {
+        ...attempt,
+        providerThreadId: freshProviderThreadId,
+        status: "completed",
+        startedAt: run.requestedAt,
+        completedAt: now,
+      },
+    });
+    yield* emitEvent({
+      type: "node.updated",
+      ...envelope,
+      payload: {
+        ...rootNode,
+        providerThreadId: freshProviderThreadId,
+        status: "completed",
+        startedAt: run.requestedAt,
+        completedAt: now,
+      },
+    });
+    yield* emitEvent({
+      type: "turn-item.updated",
+      ...envelope,
+      payload: { ...userItem, providerThreadId: freshProviderThreadId, freshContext: true },
+    });
+    yield* emitEvent({
+      type: "turn-item.updated",
+      ...envelope,
+      payload: {
+        ...compaction,
+        providerThreadId: freshProviderThreadId,
+        status: "completed",
+        afterTokenCount:
+          command.afterTokenCount + sessionBaselineTokens(projection, providerThread.id),
+        ...(command.summaryPreview === "" ? {} : { summary: command.summaryPreview }),
+        completedAt: now,
+        updatedAt: now,
+      },
+    });
+    yield* emitEvent({
+      type: "run.updated",
+      ...envelope,
+      payload: {
+        ...run,
+        providerThreadId: freshProviderThreadId,
+        status: "completed",
+        startedAt: run.requestedAt,
+        completedAt: now,
+        freshContext: true,
+      },
+    });
+    for (const session of sessionsToDetach) {
+      if (session.id === providerSessionId) continue;
+      yield* emitEvent({
+        type: "provider-session.detached",
+        threadId: command.threadId,
+        driver: session.driver,
+        providerInstanceId: session.providerInstanceId,
+        occurredAt: now,
+        payload: {
+          providerSessionId: session.id,
+          detachedAt: now,
+          reason: FRESH_CONTEXT_DETACH_REASON,
+        },
+      });
+      yield* Ref.update(effects, (existing) => [
+        ...existing,
+        {
+          id: `effect:${command.commandId}:provider-session.detach:${session.id}`,
+          commandId: command.commandId,
+          threadId: command.threadId,
+          request: {
+            type: "provider-session.detach",
+            providerSessionId: session.id,
+            detail: FRESH_CONTEXT_DETACH_REASON,
+          },
+        } satisfies PendingOrchestrationEffectV2,
+      ]);
+    }
+  });
+
+  /** Ends a compress that did not swap sessions, so the context boundary stays where it was. */
+  const emitCompressCancellation = Effect.fn("Orchestrator.emitCompressCancellation")(
+    function* (input: {
+      readonly command: OrchestrationV2ServerCommand;
+      readonly events: Ref.Ref<Array<OrchestrationV2DomainEvent>>;
+      readonly run: OrchestrationV2Run;
+      readonly attempt: OrchestrationV2RunAttempt | undefined;
+      readonly rootNode: OrchestrationV2ExecutionNode | undefined;
+      readonly compaction:
+        | Extract<OrchestrationV2TurnItem, { readonly type: "compaction" }>
+        | undefined;
+      readonly itemStatus: "failed" | "cancelled";
+      readonly now: DateTime.Utc;
+    }) {
+      const { run, now } = input;
+      const emitEvent = emit(input.events, input.command);
+      const envelope = {
+        threadId: run.threadId,
+        runId: run.id,
+        ...(run.rootNodeId === null ? {} : { nodeId: run.rootNodeId }),
+        providerInstanceId: run.providerInstanceId,
+        occurredAt: now,
+      } as const;
+      if (input.compaction !== undefined && input.compaction.status === "running") {
+        yield* emitEvent({
+          type: "turn-item.updated",
+          ...envelope,
+          payload: {
+            ...input.compaction,
+            status: input.itemStatus,
+            completedAt: now,
+            updatedAt: now,
+          },
+        });
+      }
+      if (run.status !== "preparing") return;
+      if (input.attempt !== undefined && input.attempt.status === "pending") {
+        yield* emitEvent({
+          type: "run-attempt.updated",
+          ...envelope,
+          payload: { ...input.attempt, status: "cancelled", completedAt: now },
+        });
+      }
+      if (input.rootNode !== undefined && input.rootNode.status === "pending") {
+        yield* emitEvent({
+          type: "node.updated",
+          ...envelope,
+          payload: { ...input.rootNode, status: "cancelled", completedAt: now },
+        });
+      }
+      yield* emitEvent({
+        type: "run.updated",
+        ...envelope,
+        payload: {
+          ...run,
+          status: "cancelled",
+          startedAt: null,
+          queuePosition: null,
+          completedAt: now,
+        },
+      });
+    },
+  );
+
+  const dispatchCompressFail = Effect.fn("Orchestrator.dispatchCompressFail")(function* (
+    command: Extract<OrchestrationV2InternalCommand, { readonly type: "thread.compress.fail" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const { projection, run, compaction, attempt, rootNode } = yield* preparingCompressRun(
+      command,
+      events,
+    );
+    const now = yield* DateTime.now;
+    const preparing = run.status === "preparing";
+    yield* emitCompressCancellation({
+      command,
+      events,
+      run,
+      attempt,
+      rootNode,
+      compaction,
+      itemStatus: preparing ? "failed" : "cancelled",
+      now,
+    });
+    if (!preparing) return;
+    const automatic =
+      projection.messages.find((message) => message.id === run.userMessageId)?.creationSource ===
+      "server";
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "turn-item.updated",
+      threadId: command.threadId,
+      runId: run.id,
+      ...(run.rootNodeId === null ? {} : { nodeId: run.rootNodeId }),
+      providerInstanceId: run.providerInstanceId,
+      occurredAt: now,
+      payload: {
+        id: idAllocator.derive.turnItemFromProviderItem({
+          driver: compaction?.driver ?? ProviderDriverKind.make("claudeAgent"),
+          nativeItemId: `compress-failure:${run.id}`,
+        }),
+        threadId: command.threadId,
+        runId: run.id,
+        nodeId: run.rootNodeId,
+        providerThreadId: run.providerThreadId,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: yield* nextTurnItemOrdinal(projection),
+        status: "completed",
+        title: "Compress failed",
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+        type: "system_notice",
+        level: automatic ? "warning" : "error",
+        message: automatic
+          ? `Automatic compress failed, so the session continues unchanged: ${command.reason}`
+          : `Compress failed and the session was not replaced: ${command.reason} Send /compact to compact it natively instead.`,
+      },
+    });
+  });
+
+  const dispatchCompressUndo = Effect.fn("Orchestrator.dispatchCompressUndo")(function* (
+    command: Extract<OrchestrationV2InternalCommand, { readonly type: "thread.compress.undo" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+    if (compressUndoTarget(projection) !== command.runId)
+      return yield* compressRefusal(command, "not-undoable");
+    const run = projection.runs.find((candidate) => candidate.id === command.runId)!;
+    const { turnItems, contextHandoffs } = yield* readCompressItems(command.threadId, run.id);
+    const handoff = contextHandoffs.find(
+      (candidate) =>
+        candidate.compressedSummary === true &&
+        candidate.targetRunId === run.id &&
+        candidate.status === "ready",
+    );
+    const previousProviderThread = projection.providerThreads.find(
+      (candidate) => candidate.id === handoff?.fromProviderThreadIds[0],
+    );
+    if (
+      handoff === undefined ||
+      handoff.delivery !== undefined ||
+      previousProviderThread === undefined
+    )
+      return yield* compressRefusal(command, "not-undoable");
+    const now = yield* DateTime.now;
+    const emitEvent = emit(events, command);
+    const envelope = {
+      threadId: command.threadId,
+      runId: run.id,
+      ...(run.rootNodeId === null ? {} : { nodeId: run.rootNodeId }),
+      providerInstanceId: run.providerInstanceId,
+      occurredAt: now,
+    } as const;
+    const { freshContext: _runFreshContext, ...runBeforeCompress } = run;
+    yield* emitEvent({
+      type: "run.updated",
+      ...envelope,
+      payload: {
+        ...runBeforeCompress,
+        providerThreadId: previousProviderThread.id,
+        status: "cancelled",
+        startedAt: null,
+        completedAt: now,
+      },
+    });
+    for (const item of turnItems) {
+      if (item.type === "user_message" && item.messageId === run.userMessageId) {
+        const { freshContext: _itemFreshContext, ...itemBeforeCompress } = item;
+        yield* emitEvent({
+          type: "turn-item.updated",
+          ...envelope,
+          payload: { ...itemBeforeCompress, providerThreadId: previousProviderThread.id },
+        });
+      }
+      if (item.type === "compaction" && item.method === "compress")
+        yield* emitEvent({
+          type: "turn-item.updated",
+          ...envelope,
+          payload: { ...item, status: "cancelled", updatedAt: now },
+        });
+    }
+    yield* emitEvent({
+      type: "context-handoff.updated",
+      ...envelope,
+      payload: { ...handoff, status: "superseded", updatedAt: now },
+    });
+    const sessionAlive = projection.providerSessions.some(
+      (session) => session.id === previousProviderThread.providerSessionId,
+    );
+    yield* emitEvent({
+      type: "provider-thread.updated",
+      threadId: command.threadId,
+      driver: previousProviderThread.driver,
+      providerInstanceId: previousProviderThread.providerInstanceId,
+      occurredAt: now,
+      payload: {
+        ...previousProviderThread,
+        ...(sessionAlive ? {} : { providerSessionId: null }),
+        updatedAt: now,
+      },
+    });
+  });
+
   const endNativeSubagentTrees = Effect.fn("Orchestrator.endNativeSubagentTrees")(
     function* (input: {
       readonly command: Extract<
@@ -13961,6 +14676,30 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             }
           });
 
+    if (run.compress === true && run.status === "preparing") {
+      const { turnItems } = yield* readCompressItems(command.threadId, run.id);
+      yield* emitCompressCancellation({
+        command,
+        events,
+        run,
+        attempt: projection.attempts.find((candidate) => candidate.id === run.activeAttemptId),
+        rootNode,
+        compaction: turnItems.find(
+          (item): item is Extract<OrchestrationV2TurnItem, { readonly type: "compaction" }> =>
+            item.type === "compaction" && item.method === "compress",
+        ),
+        itemStatus: "cancelled",
+        now,
+      });
+      yield* stopRemainingWork();
+      return {
+        effectTypes: ["thread-compress.summarize"],
+        reason: `Compress run ${run.id} was stopped.`,
+      } satisfies {
+        readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
+        readonly reason: string;
+      };
+    }
     const emitEvent = emit(events, command);
     const interruptRequestItem: OrchestrationV2TurnItem = {
       id: idAllocator.derive.runSignalTurnItem({
@@ -16078,6 +16817,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "prepared-run.retry":
         yield* dispatchPreparedRunRetry(command, events);
+        break;
+      case "thread.compress.start":
+        yield* dispatchCompressStart(command, events, effects);
+        break;
+      case "thread.compress.complete":
+        yield* dispatchCompressComplete(command, events, effects);
+        break;
+      case "thread.compress.fail":
+        yield* dispatchCompressFail(command, events);
+        break;
+      case "thread.compress.undo":
+        yield* dispatchCompressUndo(command, events);
         break;
       case "runtime-request.respond":
         yield* dispatchRuntimeRequestRespond(command, events, effects);

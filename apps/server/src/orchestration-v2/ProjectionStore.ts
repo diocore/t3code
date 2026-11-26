@@ -1976,7 +1976,11 @@ export function threadShellFromProjection(
       latestRun != null && isBackgroundWakeRunForShell(latestRun, projection),
     activeRunId: activeRun?.id ?? null,
     blockedOnThreadWait: deriveBlockedOnThreadWait({ activeRun, turnItems: projection.turnItems }),
-    activityRunStatus: activityRun?.status ?? null,
+    // A preparing /compress run is summarizing, not setting up a workspace.
+    activityRunStatus:
+      activityRun?.compress && activityRun.status === "preparing"
+        ? "running"
+        : (activityRun?.status ?? null),
     activityRunStartedAt:
       activityRun === null ? null : orchestrationV2RunWorkStartedAt(activityRun),
     status: latestRun?.status ?? "idle",

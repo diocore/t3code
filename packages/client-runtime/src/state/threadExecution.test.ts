@@ -454,6 +454,14 @@ describe("thread execution presentation", () => {
     ).toBeUndefined();
   });
 
+  it("marks a preparing /compress run without a provider-starting label", () => {
+    const compressRun = { ...run("run-compress", 1, "preparing"), compress: true as const };
+    const summary = deriveThreadActivityRun({ ...v2Projection, runs: [compressRun] });
+
+    expect(summary?.compress).toBe(true);
+    expect(summary?.providerStartingLabel).toBeUndefined();
+  });
+
   it("presents a held queue as the stopped run instead of queued work", () => {
     const interrupted = { ...run("run-interrupted", 1, "interrupted"), completedAt: now };
     const held = { ...run("run-held", 2, "queued"), queueHeld: true };

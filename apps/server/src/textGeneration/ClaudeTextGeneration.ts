@@ -10,6 +10,11 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { type ClaudeSettings, TextGenerationError } from "@t3tools/contracts";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
+import { ContextSummarySections } from "@t3tools/provider-core/server/contextSummary";
+import type {
+  ContextSummaryGenerationInput,
+  ProviderTextGeneration,
+} from "@t3tools/provider-core/server/textGeneration";
 import * as TextGenerationOperations from "@t3tools/provider-core/server/textGenerationOperations";
 import {
   normalizeCliError,
@@ -37,8 +42,11 @@ import {
 import { readClaudeLaunchArgSettings } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { resolveAttachmentPath } from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
+import { buildContextSummaryPrompt } from "./contextSummaryPrompt.ts";
 
 const CLAUDE_TIMEOUT_MS = 180_000;
+// Measured rolling-summary chunks took 60-140s; a timeout would retry the same chunk forever.
+const CLAUDE_CONTEXT_SUMMARY_TIMEOUT_MS = 10 * 60_000;
 /** `--tools` takes bare names; patterns go in the allow list. */
 const CLAUDE_INVESTIGATION_TOOLS = "Read,Grep,Glob,Bash";
 /** In dontAsk mode every call outside this list, Bash included, is refused. */
@@ -60,12 +68,24 @@ const NO_SESSION_PERSISTENCE_REJECTED = `error: unknown option '${NO_SESSION_PER
 const IMAGES_UNSUPPORTED =
   /image[^\n]*(?:not support|unsupported)|(?:not support|unsupported)[^\n]*image/i;
 
+// Read leniently: an odd usage report must not fail the operations that ignore it.
+const ClaudeResultUsage = {
+  usage: Schema.optionalKey(Schema.Unknown),
+  num_turns: Schema.optionalKey(Schema.Unknown),
+};
+const usageCount = (value: unknown, key: string): number => {
+  const count =
+    typeof value === "object" && value !== null ? (value as Record<string, unknown>)[key] : value;
+  return typeof count === "number" && Number.isFinite(count) ? count : 0;
+};
 const ClaudeOutputEnvelope = Schema.Struct({
   structured_output: Schema.Unknown,
+  ...ClaudeResultUsage,
 });
 const ClaudeOutputMessage = Schema.Struct({
   type: Schema.String,
   structured_output: Schema.optionalKey(Schema.Unknown),
+  ...ClaudeResultUsage,
 });
 const isClaudeOutputEnvelope = Schema.is(ClaudeOutputEnvelope);
 
@@ -191,12 +211,15 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     investigate,
     attachments,
   }: TextGenerationOperations.Request<S>): Effect.fn.Return<
-    S["Type"],
+    {
+      readonly value: S["Type"];
+      readonly usage: { promptTokens: number; outputTokens: number; turns: number };
+    },
     TextGenerationError,
     S["DecodingServices"] | Scope.Scope
   > {
     const workingDirectory =
-      operation === "generateThreadTitle"
+      operation === "generateThreadTitle" || operation === "generateContextSummary"
         ? yield* fileSystem
             .makeTempDirectoryScoped({ prefix: "t3code-claude-title-" })
             .pipe(
@@ -403,7 +426,12 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         );
       }),
       Effect.scoped,
-      Effect.timeoutOption(investigate?.timeoutMs ?? CLAUDE_TIMEOUT_MS),
+      Effect.timeoutOption(
+        investigate?.timeoutMs ??
+          (operation === "generateContextSummary"
+            ? CLAUDE_CONTEXT_SUMMARY_TIMEOUT_MS
+            : CLAUDE_TIMEOUT_MS),
+      ),
       Effect.flatMap(
         Option.match({
           onNone: () =>
@@ -432,7 +460,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       : output.findLast((message) => message.type === "result");
 
     const decodeOutput = Schema.decodeEffect(outputSchemaJson);
-    return yield* decodeOutput(envelope?.structured_output).pipe(
+    const value = yield* decodeOutput(envelope?.structured_output).pipe(
       Effect.catchTags({
         SchemaError: (cause) =>
           Effect.fail(
@@ -444,11 +472,42 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           ),
       }),
     );
+    const usage = envelope?.usage;
+    return {
+      value,
+      usage: {
+        promptTokens:
+          usageCount(usage, "input_tokens") +
+          usageCount(usage, "cache_read_input_tokens") +
+          usageCount(usage, "cache_creation_input_tokens"),
+        outputTokens: usageCount(usage, "output_tokens"),
+        turns: Math.max(1, usageCount(envelope?.num_turns, "")),
+      },
+    };
   });
 
-  return TextGenerationOperations.fromRunner(
-    "ClaudeTextGeneration",
-    <S extends Schema.Top>(request: TextGenerationOperations.Request<S>) =>
-      Effect.scoped(runClaudeJson(request)),
+  const generateContextSummary = Effect.fn("ClaudeTextGeneration.generateContextSummary")(
+    function* (input: ContextSummaryGenerationInput) {
+      // No forced low effort: blind-judged retention dropped from 7.5 to 6.0 of 10 at --effort low.
+      const { value, usage } = yield* Effect.scoped(
+        runClaudeJson({
+          operation: "generateContextSummary",
+          cwd: ".",
+          prompt: buildContextSummaryPrompt(input),
+          outputSchema: ContextSummarySections,
+          modelSelection: input.modelSelection,
+        }),
+      );
+      return { sections: value, usage };
+    },
   );
+
+  return {
+    ...TextGenerationOperations.fromRunner(
+      "ClaudeTextGeneration",
+      <S extends Schema.Top>(request: TextGenerationOperations.Request<S>) =>
+        Effect.scoped(runClaudeJson(request)).pipe(Effect.map(({ value }) => value)),
+    ),
+    generateContextSummary,
+  } satisfies ProviderTextGeneration;
 });

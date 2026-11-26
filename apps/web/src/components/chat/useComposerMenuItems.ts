@@ -76,6 +76,7 @@ export function useComposerMenuItems({
   sideChatAvailable,
   sideChatDisabledReason,
   freshSessionAvailable,
+  compressAvailable,
   compactSlashCommandAvailable,
   selectedProvider,
   selectedProviderSkills,
@@ -97,6 +98,7 @@ export function useComposerMenuItems({
   readonly sideChatAvailable: boolean;
   readonly sideChatDisabledReason: string | null;
   readonly freshSessionAvailable: boolean;
+  readonly compressAvailable: boolean;
   readonly compactSlashCommandAvailable: boolean;
   readonly selectedProvider: ProviderDriverKind;
   readonly selectedProviderSkills: ServerProvider["skills"];
@@ -311,6 +313,17 @@ export function useComposerMenuItems({
               },
             ] as const)
           : []),
+        ...(compressAvailable
+          ? ([
+              {
+                id: "slash:compress",
+                type: "slash-command",
+                command: "compress",
+                label: "/compress",
+                description: gt("Continue in a fresh session seeded with a summary of this thread"),
+              },
+            ] as const)
+          : []),
       ] satisfies ReadonlyArray<Extract<ComposerCommandItem, { type: "slash-command" }>>;
       const slashMenuSkills = getProviderSkillsForSlashMenu(
         selectedProviderSkills,
@@ -344,6 +357,7 @@ export function useComposerMenuItems({
         (item) =>
           (item.command.name !== "compact" || compactSlashCommandAvailable) &&
           (item.command.name !== "clear" || !freshSessionAvailable) &&
+          (item.command.name !== "compress" || !compressAvailable) &&
           (item.command.name !== "plan" || !planModeUiEnabled),
       );
       const slashCommandItems = slashCommandItemsForPromptPosition(

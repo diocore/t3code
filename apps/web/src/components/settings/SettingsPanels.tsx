@@ -1849,7 +1849,39 @@ export function DiffsSettingsPanel() {
 
 /** The Providers panel can render without a settings scope, as its tests do; this row needs one. */
 export function CompactIdleThreadsRow() {
-  return useOptionalSettingsScope() === null ? null : <ScopedCompactIdleThreadsRow />;
+  return useOptionalSettingsScope() === null ? null : (
+    <>
+      <ScopedCompactIdleThreadsRow />
+      <ScopedAutoCompressRow />
+    </>
+  );
+}
+
+function ScopedAutoCompressRow() {
+  const setting = useSearchableSetting();
+  const gt = useGT();
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+
+  return (
+    <SettingsRow
+      serverScoped
+      {...setting("auto-compress")}
+      description={gt(
+        "For long Claude threads, Haiku keeps a rolling summary in the background, and a thread idle for {minutes, plural, one {{minutes} minute} other {{minutes} minutes}} is compressed into a fresh session. Replaces idle compaction on Claude.",
+        { minutes: settings.compressIdleMinutes },
+      )}
+      settingKeys={["autoCompress"]}
+      control={
+        <ScopedSwitch
+          settingKeys={["autoCompress"]}
+          checked={settings.autoCompress}
+          onCheckedChange={(checked) => updateSettings({ autoCompress: Boolean(checked) })}
+          aria-label={gt("Auto-compress (alpha)")}
+        />
+      }
+    />
+  );
 }
 
 const IDLE_COMPACTION_MODE_LABELS: Record<IdleCompactionMode, string> = {

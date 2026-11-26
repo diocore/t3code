@@ -261,6 +261,10 @@ export interface ThreadDetailScreenProps {
   readonly isCompacting: boolean;
   /** Set while the next send compacts the thread first. */
   readonly compactBeforeSend?: ThreadComposerProps["compactBeforeSend"];
+  /** `/compress` runs T3's compress on this thread. */
+  readonly compressAvailable?: boolean;
+  readonly compressUndoRunId?: RunId | null;
+  readonly onUndoCompress?: () => void;
   readonly creationState:
     | {
         readonly kind: "preparing";
@@ -968,6 +972,13 @@ function ThreadDetailBody(
     props.activePendingUserInput === null &&
     props.selectedThread.latestRun != null &&
     props.serverConfig?.environment.capabilities.freshContext === true;
+  const compressOffered =
+    props.compressAvailable === true &&
+    !props.draftMode &&
+    props.canOperateThread &&
+    props.queuedRunEdit === null &&
+    props.activePendingApproval === null &&
+    props.activePendingUserInput === null;
   const hasCompactableConversation =
     selectedThreadFeed.some(
       (entry) =>
@@ -1543,6 +1554,8 @@ function ThreadDetailBody(
                   workspaceRoot={props.threadCwd}
                   feed={props.selectedThreadFeed}
                   pendingHandoff={props.pendingHandoff}
+                  compressUndoRunId={props.compressUndoRunId ?? null}
+                  {...(props.onUndoCompress ? { onUndoCompress: props.onUndoCompress } : {})}
                   statusLines={statusLines}
                   worktreeSetup={props.worktreeSetup}
                   preparingWorktree={
@@ -1946,6 +1959,7 @@ function ThreadDetailBody(
                               onFreshSession: () => setFreshSessionPending(selectedThreadKey, true),
                             }
                           : {})}
+                        offersCompress={compressOffered}
                         offersSideChat={
                           props.offersSideChat &&
                           !props.draftMode &&

@@ -154,6 +154,8 @@ export interface ThreadComposerProps {
   } | null;
   /** Arms a fresh session for the next message; absent where `/clear` is unavailable. */
   readonly onFreshSession?: () => void;
+  /** `/compress` runs T3's compress on this thread. */
+  readonly offersCompress?: boolean;
   readonly offersSideChat?: boolean;
   readonly serverConfig: T3ServerConfig | null;
   readonly queueCount: number;
@@ -384,6 +386,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     usageLimits: usageLimitsOffered,
     codexFeedback: selectedProviderStatus?.driver === "codex",
     freshSession: props.onFreshSession !== undefined && draftContext === undefined,
+    compress: props.offersCompress === true && draftContext === undefined,
   });
   const sendPresentation = resolveComposerSendPresentation(
     {
@@ -453,6 +456,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     modelOptions: mentionModelOptions,
     modelProviders: props.serverConfig?.providers,
     ...(props.onFreshSession === undefined ? {} : { onFreshSession: props.onFreshSession }),
+    offersCompress: props.offersCompress === true,
     offersSideChat: props.offersSideChat === true,
   });
   const voiceInput = useVoiceInputController({

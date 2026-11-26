@@ -61,7 +61,8 @@ export function useWorktreeSetup(input: {
   const [heldSnapshot, setHeldSnapshot] = useState<WorktreeSetupSnapshot | null>(null);
   const started = startedSetup !== null && startedSetup.ownerKey === ownerKey;
   const target = started ? startedSetup : routeThreadRef;
-  const runPreparing = activityRun?.status === "preparing";
+  const workspaceRun = activityRun?.compress ? null : activityRun;
+  const runPreparing = workspaceRun?.status === "preparing";
   const snapshotQuery = useEnvironmentQuery(
     started ||
       (activeThread?.id === routeThreadRef.threadId &&
@@ -93,7 +94,7 @@ export function useWorktreeSetup(input: {
   const { snapshot: liveSnapshot, isPreparingWorktree } = resolveWorktreeSetupProgress({
     threadId: target.threadId,
     localPreparing,
-    runStatus: activityRun?.status,
+    runStatus: workspaceRun?.status,
     latest: latestSnapshot,
     held: heldSnapshot,
   });

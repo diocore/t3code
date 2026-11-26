@@ -52,6 +52,7 @@ import * as ContextHandoffService from "./ContextHandoffService.ts";
 import { canForkBusySourceNatively, isActiveRun } from "./CommandPolicy.ts";
 import { contextBoundaryOrdinal, isScheduledFreshRun } from "./contextBoundary.ts";
 import {
+  COMPRESSED_SUMMARY_HANDOFF_CAP,
   DEFAULT_HANDOFF_TOKEN_CAP,
   handoffTokenCapConfig,
   handoffBudget,
@@ -573,7 +574,26 @@ export const layer: Layer.Layer<
           .filter((transfer) => transfer.type === "subagent_result")
           .map((transfer) => transfer.id),
       );
-      const isPendingForRun = (handoff: OrchestrationV2ContextHandoff, anyProviderThread = false) =>
+      const freshRuns = projection.runs.filter((source) => source.freshContext === true);
+      const compressBoundaryRun = freshRuns.some((source) => source.compress === true)
+        ? yield* projectionStore
+            .getThreadRecords(input.threadId, ["turnItems"], {
+              turnItemTypes: ["user_message"],
+              turnItemRunIds: freshRuns.map((source) => source.id),
+            })
+            .pipe(
+              Effect.map(({ turnItems }) => {
+                const ordinal = contextBoundaryOrdinal({ runs: projection.runs, turnItems });
+                return projection.runs.find(
+                  (source) => source.ordinal === ordinal && source.compress === true,
+                );
+              }),
+            )
+        : undefined;
+      const isPendingNonCompressed = (
+        handoff: OrchestrationV2ContextHandoff,
+        anyProviderThread: boolean,
+      ) =>
         handoff.status === "ready" &&
         (handoff.targetRunId === run.id ||
           ((anyProviderThread || handoff.toProviderThreadId === run.providerThreadId) &&
@@ -602,6 +622,18 @@ export const layer: Layer.Layer<
                         message.id === source.userMessageId && isSlashCommandMessage(message),
                     ))),
             )));
+      const isPendingForRun = (
+        handoff: OrchestrationV2ContextHandoff,
+        anyProviderThread = false,
+      ) =>
+        handoff.compressedSummary === true
+          ? // The fresh session's only copy of the history before it: every later run carries it
+            // to each native thread it has not reached, until /clear or Undo retires it.
+            handoff.status === "ready" &&
+            compressBoundaryRun !== undefined &&
+            handoff.targetRunId === compressBoundaryRun.id &&
+            run.ordinal > compressBoundaryRun.ordinal
+          : isPendingNonCompressed(handoff, anyProviderThread);
       const isSideChatHandoff = (handoff: OrchestrationV2ContextHandoff) =>
         projection.thread.lineage.sideChat === true &&
         ContextHandoffService.isSideChatContextHandoff(handoff);
@@ -1232,8 +1264,18 @@ export const layer: Layer.Layer<
           missedRuns,
           missedRunIds,
           budget: Effect.gen(function* () {
+            const compressedSummaryUndelivered =
+              session.driver === "claudeAgent" &&
+              handoffs.some(
+                (handoff) =>
+                  handoff.compressedSummary === true &&
+                  (handoff.delivery === undefined ||
+                    handoff.delivery.nativeThreadId !==
+                      loadedProviderThread.nativeThreadRef?.nativeId),
+              );
             return handoffBudget({
-              tokenCap,
+              tokenCap: compressedSummaryUndelivered ? COMPRESSED_SUMMARY_HANDOFF_CAP : tokenCap,
+              ...(compressedSummaryUndelivered ? { byteCap: COMPRESSED_SUMMARY_HANDOFF_CAP } : {}),
               modelContextWindow,
               userText: restartNote === "" ? userText : `${restartNote}\n\n${userText}`,
               attachments: providerMessage.attachments,

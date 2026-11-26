@@ -1475,6 +1475,16 @@ describe("planComposerTurn", () => {
     }
   });
 
+  it("queues behind an automatic compress instead of compacting first", () => {
+    expect(
+      planComposerTurn({ ...base, resumeCompactionTokens: 120_000, compressBeforeSend: true }),
+    ).toMatchObject({
+      compactBeforeSend: false,
+      turnDispatchMode: "queue",
+      shouldQueueBehindActiveRun: true,
+    });
+  });
+
   it("queues behind a running turn only when asked to", () => {
     const running = {
       ...base,

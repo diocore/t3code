@@ -296,6 +296,39 @@ describe("resolveIdleCompaction", () => {
     expect(globalIdleCompaction(decodeServerSettings({}))).toBe("onReturn");
   });
 
+  it("decodes settings saved before auto-compress with its defaults", () => {
+    const settings = decodeServerSettings({
+      idleCompaction: "beforeCacheExpires",
+      textGenerationModelSelection: { instanceId: "codex", model: "gpt-5.4-mini" },
+    });
+    expect(settings.autoCompress).toBe(false);
+    expect(settings.compressIdleMinutes).toBe(30);
+    expect(settings.compactionSummaryModelSelection).toEqual({
+      instanceId: "claudeAgent",
+      model: "claude-haiku-5-5",
+    });
+    expect(resolveIdleCompaction(settings, ProviderInstanceId.make("claudeAgent"))).toBe(
+      "beforeCacheExpires",
+    );
+    expect(() => decodeServerSettings({ compressIdleMinutes: 0 })).toThrow();
+  });
+
+  it("turns native idle compaction off on Claude instances while auto-compress is on", () => {
+    const settings = decodeServerSettings({
+      autoCompress: true,
+      idleCompaction: "beforeCacheExpires",
+      providerInstances: {
+        claude_work: { driver: "claudeAgent", config: { idleCompaction: "onReturn" } },
+        codex_work: { driver: "codex" },
+      },
+    });
+    expect(resolveIdleCompaction(settings, ProviderInstanceId.make("claude_work"))).toBe("off");
+    expect(resolveIdleCompaction(settings, ProviderInstanceId.make("claudeAgent"))).toBe("off");
+    expect(resolveIdleCompaction(settings, ProviderInstanceId.make("codex_work"))).toBe(
+      "beforeCacheExpires",
+    );
+  });
+
   it("keeps the legacy switch a boolean, as shipped clients decode it", () => {
     const encode = Schema.encodeSync(Schema.toCodecJson(ServerSettings));
     for (const mode of ["onReturn", "beforeCacheExpires", "off"] as const) {
