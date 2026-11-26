@@ -686,4 +686,76 @@ describe("handoff delivery", () => {
       assert.equal(calls, 0);
     }),
   );
+
+  const compressedText = [
+    "This is a fresh session continuing T3 thread thread:handoff. Read its full history with t3_thread_read.",
+    `## Summary (through run 4)\n### Goal\n${"g".repeat(3_000)}`,
+    `## Recent runs\n=== RUN 5 ===\n[USER]\n${"r".repeat(3_000)}`,
+    `## Working set\nFiles:\n- src/${"w".repeat(2_000)}.ts`,
+  ].join("\n\n");
+  const compressedHandoff: OrchestrationV2ContextHandoff = {
+    ...handoff,
+    id: ContextHandoffId.make("handoff:compressed"),
+    strategy: "manual_context",
+    summaryText: compressedText,
+    history: undefined,
+    compressedSummary: true,
+  };
+  const deliverCompressed = (budget: number, handoffs = [compressedHandoff]) =>
+    Effect.gen(function* () {
+      const persisted: Array<OrchestrationV2ContextHandoff> = [];
+      const result = yield* deliverContextHandoffs({
+        handoffs,
+        providerThread,
+        budget,
+        alreadyDeliveredItemIds: new Set(),
+        persist: (value) => Effect.sync(() => persisted.push(value)),
+      });
+      yield* result.delivered;
+      return { context: result.context, persisted };
+    });
+
+  it.effect("delivers a /compress summary whole and inline when it fits", () =>
+    Effect.gen(function* () {
+      const { context, persisted } = yield* deliverCompressed(16_000);
+      assert.include(context, compressedText);
+      assert.notInclude(context, "Context handoff (manual_context)");
+      assert.deepEqual(
+        persisted.map((value) => value.delivery?.status),
+        ["pending", "inline"],
+      );
+      assert.equal(persisted.at(-1)?.delivery?.nativeThreadId, "native:target");
+    }),
+  );
+
+  it.effect("degrades a /compress summary over the budget in a fixed order and never fails", () =>
+    Effect.gen(function* () {
+      const withoutWorkingSet = (yield* deliverCompressed(8_000)).context;
+      assert.notInclude(withoutWorkingSet, "## Working set");
+      assert.include(withoutWorkingSet, "## Recent runs");
+
+      const summaryOnly = (yield* deliverCompressed(5_000)).context;
+      assert.notInclude(summaryOnly, "## Recent runs");
+      assert.include(summaryOnly, "g".repeat(3_000));
+
+      for (const budget of [2_000, 600, 0]) {
+        const { context, persisted } = yield* deliverCompressed(budget);
+        assert.include(context, "Summary truncated to fit this session");
+        assert.include(context, "This is a fresh session continuing T3 thread");
+        assert.equal(persisted.at(-1)?.delivery?.status, "inline");
+        if (budget >= 2_000) assert.isAtMost(historyCost([], context), budget);
+      }
+    }),
+  );
+
+  it.effect("puts a /compress summary ahead of other handoffs' history", () =>
+    Effect.gen(function* () {
+      const { context } = yield* deliverCompressed(16_000, [compressedHandoff, handoff]);
+      const summaryAt = context.indexOf("This is a fresh session continuing T3 thread");
+      assert.isAtLeast(summaryAt, 0);
+      assert.isBelow(summaryAt, context.indexOf("Context handoff (full_thread_summary)"));
+      assert.include(context, messages[0]!.text);
+      assert.isAtMost(historyCost([], context), 16_000);
+    }),
+  );
 });

@@ -177,6 +177,7 @@ import * as ServerSettings from "./serverSettings.ts";
 import * as ManagedPolicy from "./policy/ManagedPolicy.ts";
 
 import * as EventStore from "./orchestration-v2/EventStore.ts";
+import * as ThreadCompaction from "./orchestration-v2/ThreadCompactionService.ts";
 import * as ThreadManagement from "./orchestration-v2/ThreadManagementService.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import * as ProjectionStore from "./orchestration-v2/ProjectionStore.ts";
@@ -911,6 +912,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(TerminalManager.TerminalManager)({}),
   Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
   Layer.mock(ThreadManagement.ThreadManagementService)({}),
+  Layer.mock(ThreadCompaction.ThreadCompactionService)({}),
   Layer.mock(ThreadSearch.ThreadSearch)({}),
   Layer.mock(UsageService.UsageService)({}),
   Layer.mock(MarginStatsService.MarginStatsService)({}),
@@ -2578,6 +2580,7 @@ it.effect("ACP session RPCs list a thread missing its history and repair it on i
       }),
       // Repairing an existing thread must not launch another one.
       Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+      Layer.mock(ThreadCompaction.ThreadCompactionService)({}),
       Layer.mock(AgentSessionImporter.AgentSessionImporter)({
         importNativeHistory: ({ threadId }) =>
           Effect.sync(() => repaired.push(threadId)).pipe(Effect.as(1)),

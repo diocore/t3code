@@ -87,6 +87,10 @@ export const SidebarProjectGroupingMode = Schema.Literals([
 ]);
 export type SidebarProjectGroupingMode = typeof SidebarProjectGroupingMode.Type;
 const DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE: SidebarProjectGroupingMode = "repository";
+export const CompressIdleMinutes = Schema.Int.check(
+  Schema.isBetween({ minimum: 1, maximum: 24 * 60 }),
+);
+export type CompressIdleMinutes = typeof CompressIdleMinutes.Type;
 export const MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS = 1;
 export const MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS = 90;
 export const SidebarAutoSettleAfterDays = Schema.Number.check(
@@ -1477,6 +1481,17 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
   idleCompaction: Schema.optionalKey(IdleCompactionMode),
+  /** Alpha: Haiku keeps a rolling summary of long Claude threads; it replaces native idle compaction. */
+  autoCompress: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  compressIdleMinutes: CompressIdleMinutes.pipe(Schema.withDecodingDefault(Effect.succeed(30))),
+  compactionSummaryModelSelection: ModelSelection.pipe(
+    Schema.withDecodingDefault(
+      Effect.succeed({
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        model: "claude-haiku-5-5",
+      }),
+    ),
+  ),
   snoozeLimitedThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   autoResumeLimitedThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   snoozePresets: SnoozePresetSettings.pipe(
@@ -1738,13 +1753,20 @@ export const idleCompactionPatch = (settings: IdleCompactionSettings, mode: Idle
       ? { compactIdleThreads: mode }
       : { compactIdleThreads: mode === "beforeCacheExpires" };
 
+/** Native idle compaction for an instance. Auto-compress replaces it on Claude instances. */
 export const resolveIdleCompaction = (
-  settings: Pick<ServerSettings, "providerInstances" | "compactIdleThreads" | "idleCompaction">,
+  settings: Pick<
+    ServerSettings,
+    "providerInstances" | "compactIdleThreads" | "idleCompaction" | "autoCompress"
+  >,
   instanceId: ProviderInstanceId,
 ): IdleCompactionMode => {
   const instance = Object.hasOwn(settings.providerInstances, instanceId)
     ? settings.providerInstances[instanceId]
     : undefined;
+  const claudeInstance =
+    instance === undefined ? instanceId === "claudeAgent" : instance.driver === "claudeAgent";
+  if (settings.autoCompress && claudeInstance) return "off";
   const override = decodeClaudeSettings(instance?.config ?? {}).pipe(
     Option.map((config) => config.idleCompaction),
     Option.getOrElse(() => "default" as const),
@@ -1931,6 +1953,9 @@ export const ServerSettingsPatch = Schema.Struct({
   sidebarAutoSettleAfterDays: Schema.optionalKey(Schema.NullOr(SidebarAutoSettleAfterDays)),
   compactIdleThreads: Schema.optionalKey(LegacyCompactIdleThreads),
   idleCompaction: Schema.optionalKey(IdleCompactionMode),
+  autoCompress: Schema.optionalKey(Schema.Boolean),
+  compressIdleMinutes: Schema.optionalKey(CompressIdleMinutes),
+  compactionSummaryModelSelection: Schema.optionalKey(ModelSelection),
   sidebarAutoSettleKeepPullRequests: Schema.optionalKey(Schema.Boolean),
   sidebarAutoSettleOnMerge: Schema.optionalKey(Schema.Boolean),
   autoResumeLimitedThreads: Schema.optionalKey(Schema.Boolean),

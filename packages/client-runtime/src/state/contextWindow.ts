@@ -9,6 +9,7 @@ import {
   type ThreadTokenUsageSnapshot,
 } from "@t3tools/contracts";
 import {
+  autoCompressDue,
   CLAUDE_RESUME_COMPACTION_NEVER_ANSWER,
   COMPACTION_SUGGESTION_MIN_TOKENS,
   isClaudeResumeCompactionQuestion,
@@ -301,7 +302,7 @@ export function compactBeforeSendTokens(input: {
   readonly providers: ReadonlyArray<ServerProvider>;
   readonly settings: Pick<
     ServerSettings,
-    "providerInstances" | "compactIdleThreads" | "idleCompaction"
+    "providerInstances" | "compactIdleThreads" | "idleCompaction" | "autoCompress"
   >;
   readonly text: string;
   readonly threadIdle: boolean;
@@ -363,4 +364,40 @@ export function compactBeforeSendTokens(input: {
     })
     ? contextWindow.usedTokens
     : null;
+}
+
+/**
+ * Whether a send into this idle Claude thread compresses it first (auto-compress), so clients
+ * call `compressThread` with `trigger: "automatic"` and queue the message behind it. A slash
+ * command goes as typed.
+ */
+export function compressBeforeSend(input: {
+  readonly projection: Pick<ThreadStructure, "thread" | "providerTurns" | "runs">;
+  readonly settings: Pick<
+    ServerSettings,
+    "autoCompress" | "compressIdleMinutes" | "providerInstances"
+  >;
+  readonly text: string;
+  readonly threadIdle: boolean;
+  readonly now: string;
+}): boolean {
+  if (!input.threadIdle || /^\s*\/[^\s/]+(?:\s|$)/u.test(input.text)) return false;
+  const { thread, providerTurns, runs } = input.projection;
+  const lastCompleted = runs
+    .filter((run) => run.status === "completed" && run.completedAt !== null)
+    .reduce<(typeof runs)[number] | undefined>(
+      (latest, run) => (latest === undefined || run.ordinal > latest.ordinal ? run : latest),
+      undefined,
+    );
+  return autoCompressDue({
+    settings: input.settings,
+    thread,
+    latestUsage: latestProviderTurnTokenUsage(
+      providerTurns.filter((turn) => turn.providerThreadId === thread.activeProviderThreadId),
+    ),
+    lastCompletedAtMs:
+      lastCompleted?.completedAt == null ? null : DateTime.toEpochMillis(lastCompleted.completedAt),
+    nowMs: Date.parse(input.now),
+    moment: "send",
+  });
 }

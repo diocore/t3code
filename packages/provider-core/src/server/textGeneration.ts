@@ -8,6 +8,7 @@ import type {
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
 
+import type { ContextSummarySections } from "./contextSummary.ts";
 import type { TextGenerationPolicy } from "./textGenerationPolicy.ts";
 import type { ThreadTitleForkSource } from "./textGenerationPrompts.ts";
 
@@ -114,6 +115,24 @@ export interface TranscriptionPostProcessingResult {
   transcription: string;
 }
 
+export interface ContextSummaryGenerationInput {
+  readonly priorSummary: ContextSummarySections | null;
+  readonly transcript: string;
+  readonly firstRunOrdinal: number;
+  readonly lastRunOrdinal: number;
+  readonly modelSelection: ModelSelection;
+}
+
+export interface ContextSummaryGenerationResult {
+  readonly sections: ContextSummarySections;
+  /** Totals across the CLI's requests; `turns` counts them. */
+  readonly usage: {
+    readonly promptTokens: number;
+    readonly outputTokens: number;
+    readonly turns: number;
+  };
+}
+
 export interface ProviderTextGeneration {
   readonly generateTranscriptionPostProcessing: (
     input: TranscriptionPostProcessingInput,
@@ -138,4 +157,8 @@ export interface ProviderTextGeneration {
   readonly generateReviewGuide: (
     input: ReviewGuideGenerationInput,
   ) => Effect.Effect<ReviewGuideGenerationResult, TextGenerationError>;
+
+  readonly generateContextSummary: (
+    input: ContextSummaryGenerationInput,
+  ) => Effect.Effect<ContextSummaryGenerationResult, TextGenerationError>;
 }

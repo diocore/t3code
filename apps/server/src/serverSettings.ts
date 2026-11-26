@@ -592,6 +592,7 @@ const ATOMIC_SETTINGS_KEYS: ReadonlySet<string> = new Set([
   "sourceControlWriterModelSelection",
   "reviewGuideModelSelection",
   "textGenerationModelSelection",
+  "compactionSummaryModelSelection",
   "fallbackModelSelection",
   "pullRequestMergeMethod",
   // Empty by default, these hold one whole value, which a managed policy can default.

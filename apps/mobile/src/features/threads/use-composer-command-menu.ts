@@ -115,6 +115,8 @@ export function buildComposerSlashCommandItems(
     readonly offersUsageLimits?: boolean;
     /** T3's `/clear` replaces the provider's, which would clear a session T3 still treats as live. */
     readonly offersFreshSession?: boolean;
+    /** T3's `/compress`, on Claude threads whose server serves it. */
+    readonly offersCompress?: boolean;
     readonly offersSideChat?: boolean;
     readonly allowInteractionMode: boolean;
     readonly selectedProviderStatus: Pick<
@@ -181,9 +183,19 @@ export function buildComposerSlashCommandItems(
       description: resolve(msg("Start a fresh session")),
     });
   }
+  if (input.offersCompress && "compress".includes(query)) {
+    items.push({
+      id: "cmd:compress",
+      type: "slash-command",
+      command: "compress",
+      label: "/compress",
+      description: resolve(msg("Continue in a fresh session seeded with a summary of this thread")),
+    });
+  }
   for (const command of input.selectedProviderStatus?.slashCommands ?? []) {
     if (!command.name.toLowerCase().includes(query)) continue;
     if (command.name === "clear" && input.offersFreshSession) continue;
+    if (command.name === "compress" && input.offersCompress) continue;
     if (command.name === "plan" && allowInteractionMode) continue;
     if (command.name === "compact" && !input.hasCompactableConversation) continue;
     if (command.name === USAGE_LIMITS_COMMAND.name && input.offersUsageLimits && !input.hasThread) {
@@ -314,6 +326,7 @@ export function useComposerCommandMenu({
   modelOptions,
   modelProviders,
   onFreshSession,
+  offersCompress = false,
   offersSideChat = false,
 }: {
   readonly draftMessage: string;
@@ -342,6 +355,7 @@ export function useComposerCommandMenu({
   readonly modelProviders?: ReadonlyArray<ServerProvider>;
   /** Arms a fresh session for the next message; absent where `/clear` is unavailable. */
   readonly onFreshSession?: () => void;
+  readonly offersCompress?: boolean;
   readonly offersSideChat?: boolean;
 }) {
   const gt = useGT();
@@ -451,6 +465,7 @@ export function useComposerCommandMenu({
           hasCompactableConversation,
           offersUsageLimits,
           offersFreshSession: onFreshSession !== undefined,
+          offersCompress,
           offersSideChat,
           allowInteractionMode: onUpdateInteractionMode !== undefined,
           selectedProviderStatus: selectedProviderStatus

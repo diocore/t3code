@@ -765,9 +765,12 @@ export function buildBoundedThreadProjection(input: {
         visibleHandoffIds.has(String(handoff.id)),
     )
     .map((handoff) =>
-      handoff.status === "pending" || handoff.status === "ready"
-        ? handoff
-        : { ...handoff, summaryText: "", detailInTurnItem: true as const },
+      handoff.status !== "pending" && handoff.status !== "ready"
+        ? { ...handoff, summaryText: "", detailInTurnItem: true as const }
+        : // Up to 96 KB, and only the provider reads it; the compaction item carries a preview.
+          handoff.compressedSummary === true
+          ? { ...handoff, summaryText: "" }
+          : handoff,
     );
 
   const projection = {

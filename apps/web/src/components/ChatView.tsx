@@ -36,6 +36,8 @@ import { useThreadLifecycle } from "./chat/useThreadLifecycle";
 import { useRightPanelActions } from "./chat/useRightPanelActions";
 import { type TerminalLaunchContext, useChatTerminalActions } from "./chat/useChatTerminalActions";
 import { useComposerSend } from "./chat/useComposerSend";
+import { useThreadCompress } from "./chat/useThreadCompress";
+import { compressLineageListed, compressUndoTarget } from "@t3tools/shared/claudeCompaction";
 import { useComposerResume } from "./chat/useComposerResume";
 import { useImplementPlanInNewThread } from "./chat/useProposedPlanSend";
 import { ThreadFind, ThreadFindCanvas } from "./chat/ThreadFindProvider";
@@ -361,6 +363,7 @@ import { ComposerSurface } from "./chat/ComposerSurface";
 import { resolveThreadSyncPhase } from "../threadSync";
 import { hasAvailableCompactionProvider } from "./chat/compaction.logic";
 import {
+  compressBeforeSend,
   deriveLatestContextWindowSnapshot,
   hasDismissedResumeCompaction,
   latestProviderTurnTokenUsage,
@@ -2707,6 +2710,57 @@ export default function ChatView(props: ChatViewProps) {
   // While a question or approval owns the composer, its text answers that, not the agent.
   const freshSessionCommandAvailable =
     freshSessionAvailable && activePendingApproval === null && pendingUserInputs.length === 0;
+  const threadCompress = useThreadCompress(environmentId);
+  const compressibleThreadDriver =
+    serverProjection === null || !compressLineageListed(serverProjection.thread.lineage)
+      ? null
+      : (providerInstanceEntries.find(
+          (entry) => entry.instanceId === serverProjection.thread.providerInstanceId,
+        )?.driverKind ?? null);
+  const compressCommandAvailable =
+    threadCompress.canCompress &&
+    isServerThread &&
+    activeMessageCount > 0 &&
+    compressibleThreadDriver === "claudeAgent" &&
+    selectedProvider === "claudeAgent" &&
+    pendingHandoff === null &&
+    activePendingApproval === null &&
+    pendingUserInputs.length === 0;
+  const onCompactContext = () => {
+    if (compactDisabled) return;
+    void sendStandaloneCommand("/compact", gt("Failed to compact context."));
+  };
+  const onComposerCompactContextStable = useStableCallback(onCompactContext);
+  const compressThreadContext = (focus: string) =>
+    activeThread !== undefined && activeThread !== null && compressCommandAvailable
+      ? threadCompress.compressThread(activeThread.id, {
+          focus,
+          onCompact: onComposerCompactContextStable,
+        })
+      : Promise.resolve(false);
+  const compressThreadContextStable = useStableCallback(compressThreadContext);
+  const compressBeforeSendStable = useStableCallback(() =>
+    activeThread ? threadCompress.compressBeforeSend(activeThread.id) : Promise.resolve(false),
+  );
+  const compressUndoRunId =
+    threadCompress.canCompress && serverProjection !== null
+      ? compressUndoTarget(serverProjection)
+      : null;
+  const undoCompressStable = useStableCallback(() => {
+    if (activeThread) void threadCompress.undoThreadCompress(activeThread.id);
+  });
+  const autoCompressDueBeforeSend = (text: string, now: string) =>
+    compressCommandAvailable &&
+    serverProjection !== null &&
+    !freshSessionPending &&
+    compressBeforeSend({
+      projection: serverProjection,
+      settings,
+      text,
+      threadIdle: !isWorking && serverProjection.runs.every((run) => run.status !== "queued"),
+      now,
+    });
+  const autoCompressDueBeforeSendStable = useStableCallback(autoCompressDueBeforeSend);
   const composerDraftTargetKey = composerTargetKey(composerDraftTarget);
   const composerSendHeld = useComposerSendHeld(composerDraftTargetKey);
   const cancelHeldSendStable = useStableCallback(() => {
@@ -2942,6 +2996,10 @@ export default function ChatView(props: ChatViewProps) {
       ...terminalShortcuts,
       ...rightPanelShortcuts,
       ...threadLifecycleShortcuts,
+      "thread.compress": ({ event }) => {
+        if (!compressCommandAvailable) return false;
+        if (!event.repeat) void compressThreadContextStable("");
+      },
       "thread.copyReference": ({ event }) => {
         if (!event.repeat) copyActiveThreadReference();
       },
@@ -3071,10 +3129,6 @@ export default function ChatView(props: ChatViewProps) {
       composerDraftTarget,
       setThreadError,
     });
-  const onCompactContext = () => {
-    if (compactDisabled) return;
-    void sendStandaloneCommand("/compact", gt("Failed to compact context."));
-  };
 
   const {
     getModelDisabledReason,
@@ -3186,6 +3240,10 @@ export default function ChatView(props: ChatViewProps) {
     panelAnimationDurationMs,
     keepFullHistory,
     freshSessionAvailable: freshSessionCommandAvailable,
+    compressCommandAvailable,
+    compressThread: compressThreadContextStable,
+    autoCompressDueBeforeSend: autoCompressDueBeforeSendStable,
+    compressBeforeSend: compressBeforeSendStable,
     resumeCompactionTokens,
     showPlanFollowUpPrompt,
     usageLimitsKey,
@@ -3244,7 +3302,6 @@ export default function ChatView(props: ChatViewProps) {
   };
   const sendPreviewAnnotationStable = useStableCallback(sendPreviewAnnotation);
   const onComposerResumeStable = useStableCallback(onResume);
-  const onComposerCompactContextStable = useStableCallback(onCompactContext);
   // Read from the projection the footer renders, so the scroll below sees the new message.
   const pendingGuestMessageIds =
     serverProjection?.thread.guestShare?.messages.flatMap((message) =>
@@ -3743,6 +3800,8 @@ export default function ChatView(props: ChatViewProps) {
                     ? {}
                     : { onOpenTurnDiff: onOpenTurnDiffStable, onForkFromRun: onForkFromRunStable })}
                   onOpenThread={onOpenRelatedThreadStable}
+                  compressUndoRunId={compressUndoRunId}
+                  onUndoCompress={undoCompressStable}
                   parentThreadLink={parentThreadLink}
                   workflowOpening={workflowOpening}
                   supportsConversationRollback={supportsConversationRollback}
@@ -3939,6 +3998,7 @@ export default function ChatView(props: ChatViewProps) {
                                 onFreshSession={
                                   freshSessionCommandAvailable ? armFreshSessionStable : undefined
                                 }
+                                compressAvailable={compressCommandAvailable}
                                 onUsageLimitsCommand={
                                   usageLimitsOffered &&
                                   usageLimitsKey !== null &&

@@ -56,7 +56,7 @@ export function toolItemForDisplay(item: OrchestrationV2TurnItem): Orchestration
 
 type CompactionLabelItem = Pick<
   Extract<OrchestrationV2TurnItem, { type: "compaction" }>,
-  "status" | "beforeTokenCount" | "afterTokenCount"
+  "status" | "beforeTokenCount" | "afterTokenCount" | "method"
 >;
 
 export function contextCompactionTokenCounts(
@@ -64,6 +64,7 @@ export function contextCompactionTokenCounts(
 ): { readonly before: string; readonly after: string } | null {
   if (
     item.status === "running" ||
+    (item.method === "compress" && item.status !== "completed") ||
     item.beforeTokenCount === undefined ||
     item.afterTokenCount === undefined
   ) {
@@ -72,10 +73,30 @@ export function contextCompactionTokenCounts(
   return { before: formatTokens(item.beforeTokenCount), after: formatTokens(item.afterTokenCount) };
 }
 
+/** An undone /compress is cancelled after it completed, so it still carries its after-count. */
+function contextCompressUndone(item: CompactionLabelItem): boolean {
+  return (
+    item.method === "compress" && item.status === "cancelled" && item.afterTokenCount !== undefined
+  );
+}
+
+function contextCompressLabel(item: CompactionLabelItem, resolve: MFunctionType): string {
+  if (item.status === "failed") return resolve(msg("Compress failed"));
+  if (contextCompressUndone(item)) return resolve(msg("Compress undone"));
+  if (item.status === "cancelled" || item.status === "interrupted")
+    return resolve(msg("Compress stopped"));
+  if (isOrchestrationV2WorkActive(item.status)) return resolve(msg("Compressing context…"));
+  const tokens = contextCompactionTokenCounts(item);
+  return tokens
+    ? resolve(msg("Context compressed {before} → {after} tokens", tokens))
+    : resolve(msg("Context compressed"));
+}
+
 export function contextCompactionLabel(
   item: CompactionLabelItem,
   resolve: MFunctionType = mFallback,
 ): string {
+  if (item.method === "compress") return contextCompressLabel(item, resolve);
   if (item.status === "failed") return resolve(msg("Context compaction failed"));
   if (item.status === "cancelled" || item.status === "interrupted")
     return resolve(msg("Context compaction stopped"));

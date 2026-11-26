@@ -81,6 +81,32 @@ over 200,000 tokens. Each Claude provider's settings can override it:
 - **Never** skips idle compaction and Claude's resume prompt. **Auto-compact after**
   still applies, and you can still compact by hand.
 
+### Compress into a fresh session
+
+Send `/compress` in a Claude thread, or pick it from the slash menu, to continue in a
+fresh Claude session that starts with a summary of the thread. Add a note after the
+command, such as `/compress keep the API decisions`, to say what the summary must keep.
+On web and desktop, **Compress context** in the command palette does the same.
+
+Unlike `/compact`, which Claude runs inside the current session, `/compress` is run by
+T3 Code, and the new session gets the summary plus your most recent turns. Unlike
+`/clear`, the new session still knows what happened before. The thread marks the switch
+with **Context compressed** and the token counts before and after. Click **Show summary**
+to read the start of the summary.
+
+Until you send your next message, **Undo** on that line returns the thread to the
+session it had before. The line then reads **Compress undone**.
+
+`/compress` runs only while the thread is idle. If background agents or commands are
+still running, use `/compact` instead, since a fresh session would end them. On other
+providers, `/compress` is sent to the provider unchanged.
+
+**Auto-compress (alpha)**, next to **Compact idle threads** in **Settings > Providers >
+Advanced**, keeps the summary up to date in the background, so compressing is quick,
+and compresses Claude threads for you: when a turn ends close to the point where Claude
+would compact on its own, and when you send a message to a large thread that has been
+idle for a while. It replaces idle compaction for Claude.
+
 ## Usage limits
 
 If your Claude subscription runs out of usage mid-turn, the thread shows which

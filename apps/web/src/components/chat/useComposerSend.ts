@@ -1,7 +1,11 @@
 import { msg } from "gt-react";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { m } from "~/i18n/messages";
-import { isClearComposerCommand, parseSideChatCommand } from "@t3tools/shared/composerTrigger";
+import {
+  isClearComposerCommand,
+  parseCompressComposerCommand,
+  parseSideChatCommand,
+} from "@t3tools/shared/composerTrigger";
 import { readWorktreeBaseBranch } from "../../worktreeRepositoryChoiceStore";
 import { armFreshSession, disarmFreshSession, readFreshSessionArm } from "./freshSessionArms";
 import {
@@ -253,6 +257,12 @@ interface ComposerSendInput {
   readonly keepFullHistory: boolean;
   /** `/clear` can arm a fresh session on this thread. */
   readonly freshSessionAvailable: boolean;
+  /** `/compress` runs T3's compress on this thread instead of going to the provider. */
+  readonly compressCommandAvailable: boolean;
+  readonly compressThread: (focus: string) => Promise<boolean>;
+  readonly autoCompressDueBeforeSend: (text: string, now: string) => boolean;
+  /** Resolves true when the automatic compress started, so the message queues behind it. */
+  readonly compressBeforeSend: () => Promise<boolean>;
   readonly resumeCompactionTokens: number | null;
   readonly usageLimitsKey: string | null;
   readonly usageLimitsOffered: boolean;
@@ -354,6 +364,10 @@ export function useComposerSend(input: ComposerSendInput) {
     panelAnimationDurationMs,
     keepFullHistory,
     freshSessionAvailable,
+    compressCommandAvailable,
+    compressThread,
+    autoCompressDueBeforeSend,
+    compressBeforeSend,
     resumeCompactionTokens,
     usageLimitsKey,
     usageLimitsOffered,
@@ -997,6 +1011,19 @@ export function useComposerSend(input: ComposerSendInput) {
       }
       return;
     }
+    const compressCommand =
+      compressCommandAvailable && composerHoldsOnlyText
+        ? parseCompressComposerCommand(trimmed)
+        : null;
+    if (compressCommand !== null) {
+      clearComposerDraftContent(composerDraftTarget);
+      if (currentRouteThreadKeyRef.current === routeThreadKey) {
+        promptRef.current = "";
+        composerRef.current?.resetCursorState();
+      }
+      await compressThread(compressCommand.focus);
+      return;
+    }
     // Read once: an arm made while this send is in flight belongs to the next message.
     const freshArm = freshSessionAvailable ? readFreshSessionArm(routeThreadKey) : undefined;
     if (
@@ -1141,6 +1168,10 @@ export function useComposerSend(input: ComposerSendInput) {
       environmentContexts: composerEnvironmentContextsSnapshot,
       messageText: messageTextForSend,
     } = sendSnapshot;
+    const autoCompressThenSend =
+      freshArm === undefined &&
+      dispatchMode === "auto" &&
+      autoCompressDueBeforeSend(messageTextForSend, new Date().toISOString());
     const {
       missingWorktreeBaseBranch,
       baseBranchForWorktree,
@@ -1163,6 +1194,7 @@ export function useComposerSend(input: ComposerSendInput) {
       phase,
       dispatchMode,
       freshContext: freshArm !== undefined,
+      compressBeforeSend: autoCompressThenSend,
     });
     if (missingWorktreeBaseBranch) {
       setThreadError(
@@ -1607,6 +1639,9 @@ export function useComposerSend(input: ComposerSendInput) {
     if (failure === null && turnAttachmentsResult._tag === "Failure") {
       failure = turnAttachmentsResult;
     }
+
+    // A refused automatic compress (no longer due, busy) leaves the queued message to start as is.
+    if (failure === null && autoCompressThenSend) await compressBeforeSend();
 
     if (failure === null && compactBeforeSend) {
       const compactResult = await startThreadTurn({

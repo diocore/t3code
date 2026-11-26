@@ -45,6 +45,7 @@ import {
   ScheduledTaskId,
   ThreadId,
   TrimmedNonEmptyString,
+  TrimmedString,
   TurnItemId,
 } from "./baseSchemas.ts";
 import { AuthMcpClientAccess } from "./auth.ts";
@@ -853,6 +854,8 @@ export const OrchestrationV2Run = Schema.Struct({
   workspacePreparation: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
   /** Starts a new provider conversation; earlier runs stay visible but never reach the provider. */
   freshContext: Schema.optional(Schema.Boolean),
+  /** A server-run /compress: no provider turn; on success it starts a summary-seeded session. */
+  compress: Schema.optional(Schema.Literal(true)),
   /** The JSON Schema of the result this run was asked to return as data. */
   outputSchema: Schema.optional(Schema.Record(Schema.String, Schema.Json)),
   /**
@@ -1336,6 +1339,8 @@ export const OrchestrationV2ContextHandoff = Schema.Struct({
     }),
   ),
   detailInTurnItem: Schema.optional(Schema.Literal(true)),
+  /** A /compress summary: delivered inline to every native thread after its boundary run. */
+  compressedSummary: Schema.optional(Schema.Literal(true)),
   createdByProviderInstanceId: Schema.NullOr(ProviderInstanceId),
   createdAt: Schema.DateTimeUtc,
   updatedAt: Schema.DateTimeUtc,
@@ -2043,6 +2048,7 @@ export const OrchestrationV2TurnItem = Schema.Union([
     summary: Schema.optional(Schema.String),
     beforeTokenCount: Schema.optional(NonNegativeInt),
     afterTokenCount: Schema.optional(NonNegativeInt),
+    method: Schema.optional(Schema.Literal("compress")),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
@@ -2938,6 +2944,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     summary: Schema.optional(Schema.String),
     beforeTokenCount: Schema.optional(NonNegativeInt),
     afterTokenCount: Schema.optional(NonNegativeInt),
+    method: Schema.optional(Schema.Literal("compress")),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,
@@ -3822,6 +3829,39 @@ export type OrchestrationV2Command = typeof OrchestrationV2Command.Type;
 
 // Excluded from dispatchCommand so only the server can send these.
 const OrchestrationV2InternalCommand = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("thread.compress.start"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    messageId: MessageId,
+    focus: Schema.optional(Schema.String),
+    trigger: Schema.Literals(["manual", "automatic"]),
+    createdBy: OrchestrationV2Actor,
+    creationSource: OrchestrationV2CreationSource,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.compress.complete"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    runId: RunId,
+    summaryText: Schema.String,
+    summaryPreview: Schema.String,
+    coveredRunOrdinals: Schema.Struct({ from: PositiveInt, to: PositiveInt }),
+    afterTokenCount: NonNegativeInt,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.compress.fail"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    runId: RunId,
+    reason: Schema.String,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.compress.undo"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    runId: RunId,
+  }),
   // The server issues this after checking the value against the run's declared schema.
   Schema.Struct({
     type: Schema.Literal("run.output.submit"),
@@ -4096,6 +4136,8 @@ export const ORCHESTRATION_V2_WS_METHODS = {
   getNativeChildWork: "orchestration.getNativeChildWork",
   stopWorkflow: "orchestration.stopWorkflow",
   forceStopThread: "orchestration.forceStopThread",
+  compressThread: "orchestration.compressThread",
+  undoThreadCompress: "orchestration.undoThreadCompress",
   getTurnItem: "orchestration.getTurnItem",
   launchThread: "orchestration.launchThread",
   subscribeShell: "orchestration.subscribeShell",
@@ -4554,6 +4596,73 @@ export class OrchestrationV2ForceStopThreadError extends Schema.TaggedError<Orch
   }
 }
 
+export const OrchestrationV2CompressThreadInput = Schema.Struct({
+  threadId: ThreadId,
+  /** What the summary must keep; the composer's text after `/compress`. */
+  focus: Schema.optionalKey(TrimmedString.check(Schema.isMaxLength(2_000))),
+  /** `automatic`: the client's idle-before-send trigger; the server re-checks that it is due. */
+  trigger: Schema.optionalKey(Schema.Literals(["manual", "automatic"])),
+  creationSource: Schema.optionalKey(OrchestrationV2CreationSource),
+});
+export type OrchestrationV2CompressThreadInput = typeof OrchestrationV2CompressThreadInput.Type;
+
+export const OrchestrationV2CompressThreadResult = Schema.Struct({
+  runId: RunId,
+  sequence: NonNegativeInt,
+});
+export type OrchestrationV2CompressThreadResult = typeof OrchestrationV2CompressThreadResult.Type;
+
+export const OrchestrationV2UndoThreadCompressInput = Schema.Struct({
+  threadId: ThreadId,
+});
+export type OrchestrationV2UndoThreadCompressInput =
+  typeof OrchestrationV2UndoThreadCompressInput.Type;
+
+export const OrchestrationV2UndoThreadCompressResult = Schema.Struct({
+  sequence: NonNegativeInt,
+});
+export type OrchestrationV2UndoThreadCompressResult =
+  typeof OrchestrationV2UndoThreadCompressResult.Type;
+
+export const OrchestrationV2CompressRefusal = Schema.Literals([
+  "busy",
+  "background-work",
+  "transfer-pending",
+  "unsupported",
+  "nothing-to-compress",
+  "not-due",
+  "not-undoable",
+]);
+export type OrchestrationV2CompressRefusal = typeof OrchestrationV2CompressRefusal.Type;
+
+const COMPRESS_REFUSAL_MESSAGES: Record<OrchestrationV2CompressRefusal, string> = {
+  busy: "This thread has a turn in progress; /compress runs only when the thread is idle.",
+  "background-work":
+    "The current session is still running background agents or commands, and a fresh session would end them. Wait for them to finish, or use /compact instead.",
+  "transfer-pending":
+    "A fork or merge is still being applied to this thread; send a message first.",
+  unsupported: "/compress is available only on Claude threads.",
+  "nothing-to-compress": "There is nothing to compress since the last fresh session.",
+  "not-due": "This thread does not need compressing yet.",
+  "not-undoable": "This compress can no longer be undone.",
+};
+
+export class OrchestrationV2CompressThreadError extends Schema.TaggedError<OrchestrationV2CompressThreadError>()(
+  "OrchestrationV2CompressThreadError",
+  {
+    threadId: ThreadId,
+    /** Absent when the compress failed for another reason; `cause` carries it. */
+    reason: Schema.optional(OrchestrationV2CompressRefusal),
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return this.reason === undefined
+      ? "Failed to compress the thread."
+      : COMPRESS_REFUSAL_MESSAGES[this.reason];
+  }
+}
+
 export const OrchestrationV2GetWorkflowScriptInput = Schema.Struct({
   threadId: ThreadId,
   scriptPath: TrimmedNonEmptyString,
@@ -4799,6 +4908,14 @@ export const OrchestrationV2RpcSchemas = {
   forceStopThread: {
     input: OrchestrationV2ForceStopThreadInput,
     output: OrchestrationV2ForceStopThreadResult,
+  },
+  compressThread: {
+    input: OrchestrationV2CompressThreadInput,
+    output: OrchestrationV2CompressThreadResult,
+  },
+  undoThreadCompress: {
+    input: OrchestrationV2UndoThreadCompressInput,
+    output: OrchestrationV2UndoThreadCompressResult,
   },
   getWorkflowScript: {
     input: OrchestrationV2GetWorkflowScriptInput,

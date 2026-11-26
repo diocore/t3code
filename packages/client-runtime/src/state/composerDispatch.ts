@@ -1,4 +1,8 @@
-import { isClearComposerCommand, parseSideChatCommand } from "@t3tools/shared/composerTrigger";
+import {
+  isClearComposerCommand,
+  parseCompressComposerCommand,
+  parseSideChatCommand,
+} from "@t3tools/shared/composerTrigger";
 import { isUsageLimitsCommand } from "@t3tools/shared/usageLimits";
 
 import { parseCodexFeedbackCommand } from "./threadFeedback.ts";
@@ -25,7 +29,9 @@ export function compactionBlocksSteering(input: {
   readonly compactCommandIsActive: boolean;
   readonly compactionRunning: boolean;
   readonly steersDuringCompaction: boolean;
-  readonly run: { readonly userMessageId: string } | undefined;
+  readonly run:
+    | { readonly userMessageId: string; readonly compress?: true | undefined }
+    | undefined;
   readonly messages:
     | ReadonlyArray<{
         readonly id: string;
@@ -34,7 +40,8 @@ export function compactionBlocksSteering(input: {
       }>
     | undefined;
 }): boolean {
-  if (input.compactCommandIsActive) return true;
+  // A /compress run ends in a fresh session; anything sent meanwhile waits for it.
+  if (input.compactCommandIsActive || input.run?.compress === true) return true;
   if (!input.compactionRunning) return false;
   if (!input.steersDuringCompaction) return true;
   if (input.run === undefined) return false;
@@ -64,6 +71,8 @@ export function composerRunsDraftLocally(input: {
   readonly codexFeedback: boolean;
   readonly freshSession: boolean;
   readonly interactionModeToggle?: boolean;
+  /** The thread takes T3's `/compress`: Claude, on a server that serves it. */
+  readonly compress?: boolean;
 }): boolean {
   if (input.sideChat && parseSideChatCommand(input.text) !== null) return true;
   if (!input.holdsOnlyText) return false;
@@ -71,6 +80,7 @@ export function composerRunsDraftLocally(input: {
     (input.usageLimits && isUsageLimitsCommand(input.text)) ||
     (input.codexFeedback && parseCodexFeedbackCommand(input.text) !== null) ||
     (input.freshSession && isClearComposerCommand(input.text)) ||
+    (input.compress === true && parseCompressComposerCommand(input.text) !== null) ||
     (input.interactionModeToggle === true && /^\/(plan|default)\s*$/i.test(input.text.trim()))
   );
 }

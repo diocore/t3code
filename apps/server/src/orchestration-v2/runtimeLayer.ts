@@ -40,6 +40,9 @@ import * as ProjectStore from "./ProjectStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as ProviderContinuationService from "./ProviderContinuationService.ts";
+import * as RollingSummaryService from "./RollingSummaryService.ts";
+import * as ThreadCompactionService from "./ThreadCompactionService.ts";
+import * as ThreadContextSummaries from "../persistence/ThreadContextSummaries.ts";
 import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationService.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
@@ -362,13 +365,28 @@ const layerProviderContinuationWorkerProvided = ProviderContinuationService.laye
     ),
   ),
 );
+const layerTextGenerationProvided = TextGeneration.layer.pipe(
+  Layer.provide(ProviderInstallationGate.layer),
+);
 const layerThreadTitleRegenerationProvided = ThreadTitleRegenerationService.layer.pipe(
   Layer.provide(
+    Layer.mergeAll(layerThreadManagementProvided, ProjectStore.layer, layerTextGenerationProvided),
+  ),
+);
+// One instance: the background worker and /compress share each thread's summary lane.
+const layerRollingSummaryProvided = RollingSummaryService.layer.pipe(
+  Layer.provide(
     Layer.mergeAll(
-      layerThreadManagementProvided,
-      ProjectStore.layer,
-      TextGeneration.layer.pipe(Layer.provide(ProviderInstallationGate.layer)),
+      layerOrchestratorProvided,
+      ProjectionStore.layer,
+      ThreadContextSummaries.layer,
+      layerTextGenerationProvided,
     ),
+  ),
+);
+const layerThreadCompactionProvided = ThreadCompactionService.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(layerOrchestratorProvided, ProjectionStore.layer, layerRollingSummaryProvided),
   ),
 );
 const layerEffectExecutorProvided = EffectWorker.layerExecutor.pipe(
@@ -381,6 +399,7 @@ const layerEffectExecutorProvided = EffectWorker.layerExecutor.pipe(
       layerProviderTurnStartServiceProvided,
       layerRuntimeRequestServiceProvided,
       layerThreadTitleRegenerationProvided,
+      layerThreadCompactionProvided,
       layerThreadManagementProvided,
       ProjectionStore.layer,
     ),
@@ -419,6 +438,8 @@ const layerMcpSignInProvided = McpSignIn.layer.pipe(
 export const layer = Layer.mergeAll(
   layerCommandOutputHubProvided,
   layerOrchestratorProvided,
+  layerRollingSummaryProvided,
+  layerThreadCompactionProvided,
   layerMcpAppRequestsProvided,
   layerMcpSignInProvided,
   layerThreadManagementProvided,

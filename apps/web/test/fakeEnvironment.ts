@@ -71,6 +71,7 @@ const descriptor = {
     repositoryIdentity: true,
     sideChats: true,
     freshContext: true,
+    threadCompress: true,
     fileAttachments: { maxUploadBytes: 10_000_000 },
   },
 };

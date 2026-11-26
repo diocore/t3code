@@ -14,11 +14,14 @@ import {
 import {
   latestProviderTurnForAttempt,
   OrchestrationV2CheckpointFileSummary,
+  OrchestrationV2CompressThreadError,
+  OrchestrationV2ContextHandoffJson,
   repositoryRewindCheckpoint,
   OrchestrationV2ProviderCapabilities,
   OrchestrationV2ProviderThread,
   OrchestrationV2ProviderThreadJson,
   OrchestrationV2RpcSchemas,
+  OrchestrationV2RunJson,
   OrchestrationV2Subagent,
   OrchestrationV2ThreadShellJson,
   OrchestrationV2SubagentJson,
@@ -743,5 +746,111 @@ describe("withMessageSenderNote", () => {
     [{ createdBy: "agent", creationSource: "server" }, "Hi", "Hi"],
   ] as const)("labels %j's message %j for the provider", (message, text, expected) => {
     expect(withMessageSenderNote(message, text)).toBe(expected);
+  });
+});
+
+describe("/compress contract fields", () => {
+  const iso = DateTime.formatIso(now);
+  const compaction = {
+    id: "item-compress",
+    type: "compaction",
+    threadId: "thread-1",
+    runId: "run-2",
+    nodeId: null,
+    providerThreadId: null,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal: 2,
+    status: "running",
+    title: null,
+    startedAt: iso,
+    completedAt: null,
+    updatedAt: iso,
+    driver: "claudeAgent",
+    beforeTokenCount: 150_000,
+    method: "compress",
+  };
+  const run = {
+    id: "run-2",
+    threadId: "thread-1",
+    ordinal: 2,
+    providerInstanceId: "claudeAgent",
+    modelSelection: { instanceId: "claudeAgent", model: "claude-sonnet-4-5" },
+    providerThreadId: null,
+    userMessageId: "message-2",
+    rootNodeId: null,
+    activeAttemptId: null,
+    status: "preparing",
+    requestedAt: iso,
+    startedAt: null,
+    completedAt: null,
+    checkpointId: null,
+    contextHandoffId: null,
+    compress: true,
+  };
+  const handoff = {
+    id: "handoff-1",
+    transferId: null,
+    threadId: "thread-1",
+    targetRunId: "run-2",
+    fromProviderThreadIds: [],
+    toProviderThreadId: "provider-thread-2",
+    coveredRunOrdinals: { from: 1, to: 1 },
+    strategy: "manual_context",
+    status: "ready",
+    summaryMessageId: null,
+    summaryText: "summary",
+    compressedSummary: true,
+    createdByProviderInstanceId: null,
+    createdAt: iso,
+    updatedAt: iso,
+  };
+
+  it("round-trips the compress run flag, the compaction method and the summary marker", () => {
+    const codec = (schema: Schema.Top) => ({
+      decode: Schema.decodeUnknownSync(Schema.toCodecJson(schema as never)),
+      encode: Schema.encodeSync(Schema.toCodecJson(schema as never)),
+    });
+    for (const [schema, value] of [
+      [OrchestrationV2TurnItemJson, compaction],
+      [OrchestrationV2RunJson, run],
+      [OrchestrationV2ContextHandoffJson, handoff],
+    ] as const) {
+      const { decode, encode } = codec(schema);
+      expect(encode(decode(value) as never)).toEqual(value);
+    }
+  });
+
+  it("decodes these records from a newer server that adds keys", () => {
+    const decodeHandoff = Schema.decodeUnknownSync(
+      Schema.toCodecJson(OrchestrationV2ContextHandoffJson),
+    );
+    expect(decodeHandoff({ ...handoff, futureMarker: { nested: true } })).not.toHaveProperty(
+      "futureMarker",
+    );
+    expect(decodeOrchestrationV2TurnItemJson({ ...compaction, futureKey: 1 })).toMatchObject({
+      method: "compress",
+    });
+  });
+
+  it("trims and bounds the compress focus", () => {
+    const decodeInput = Schema.decodeUnknownSync(OrchestrationV2RpcSchemas.compressThread.input);
+    expect(decodeInput({ threadId: "thread-1", focus: "  keep auth  " })).toEqual({
+      threadId: "thread-1",
+      focus: "keep auth",
+    });
+    expect(() => decodeInput({ threadId: "thread-1", focus: "x".repeat(2_001) })).toThrow();
+    expect(() => decodeInput({ threadId: "thread-1", trigger: "scheduled" })).toThrow();
+  });
+
+  it("names /compact when background work refuses a compress", () => {
+    const threadId = ThreadId.make("thread-1");
+    expect(
+      new OrchestrationV2CompressThreadError({ threadId, reason: "background-work" }).message,
+    ).toContain("/compact");
+    expect(new OrchestrationV2CompressThreadError({ threadId, reason: "busy" }).message).toBe(
+      "This thread has a turn in progress; /compress runs only when the thread is idle.",
+    );
   });
 });

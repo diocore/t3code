@@ -46,6 +46,18 @@ export const ContextHandoffServiceV2Error = Schema.Union([ContextHandoffPrepareE
 export type ContextHandoffServiceV2Error = typeof ContextHandoffServiceV2Error.Type;
 
 export interface ContextHandoffServiceV2Shape {
+  /** A /compress summary for the fresh session; delivered inline until it reaches each session. */
+  readonly prepareCompressedSummary: (input: {
+    readonly threadId: ThreadId;
+    readonly targetRunId: RunId;
+    /** The session the summary replaces; Undo makes it active again. */
+    readonly fromProviderThreadId: ProviderThreadId;
+    readonly toProviderThreadId: ProviderThreadId;
+    readonly toProviderInstanceId: ProviderInstanceId;
+    readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
+    readonly summaryText: string;
+    readonly createdAt: DateTime.Utc;
+  }) => Effect.Effect<OrchestrationV2ContextHandoff, ContextHandoffServiceV2Error>;
   readonly prepareLegacyImport: (input: {
     readonly threadId: ThreadId;
     readonly targetRunId: RunId;
@@ -415,6 +427,45 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
       },
     );
 
+    const prepareCompressedSummary: ContextHandoffServiceV2Shape["prepareCompressedSummary"] =
+      Effect.fn("orchestrationV2.contextHandoff.prepareCompressedSummary")(function* (input) {
+        const handoffId = yield* idAllocator.allocate
+          .contextHandoff({
+            threadId: input.threadId,
+            fromProviderInstanceId: input.toProviderInstanceId,
+            toProviderInstanceId: input.toProviderInstanceId,
+          })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ContextHandoffPrepareError({
+                  threadId: input.threadId,
+                  targetRunId: input.targetRunId,
+                  fromProviderThreadIds: [],
+                  toProviderThreadId: input.toProviderThreadId,
+                  cause,
+                }),
+            ),
+          );
+        return {
+          id: handoffId,
+          transferId: null,
+          threadId: input.threadId,
+          targetRunId: input.targetRunId,
+          fromProviderThreadIds: [input.fromProviderThreadId],
+          toProviderThreadId: input.toProviderThreadId,
+          coveredRunOrdinals: input.coveredRunOrdinals,
+          strategy: "manual_context",
+          status: "ready",
+          summaryMessageId: null,
+          summaryText: input.summaryText,
+          compressedSummary: true,
+          createdByProviderInstanceId: null,
+          createdAt: input.createdAt,
+          updatedAt: input.createdAt,
+        } satisfies OrchestrationV2ContextHandoff;
+      });
+
     const prepareForkDelta = Effect.fn("orchestrationV2.contextHandoff.prepareForkDelta")(
       function* (input: {
         readonly sourceThreadId: ThreadId;
@@ -610,6 +661,7 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
     });
 
     return ContextHandoffServiceV2.of({
+      prepareCompressedSummary,
       prepareLegacyImport,
       prepareForkDelta,
       prepareProviderHandoff,

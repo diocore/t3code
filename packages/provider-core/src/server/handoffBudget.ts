@@ -14,6 +14,8 @@ import * as Config from "effect/Config";
 
 export const DEFAULT_HANDOFF_TOKEN_CAP = 16_000;
 const HANDOFF_BYTE_CAP = 64_000;
+/** About 24K real tokens: a /compress summary into a fresh Claude session it has not reached. */
+export const COMPRESSED_SUMMARY_HANDOFF_CAP = 96_000;
 export const handoffTokenCapConfig = Config.Int("T3CODE_CONTEXT_HANDOFF_TOKEN_CAP").pipe(
   Config.withDefault(DEFAULT_HANDOFF_TOKEN_CAP),
   Config.map((value) => Math.max(1_024, Math.min(HANDOFF_BYTE_CAP, value))),
@@ -109,6 +111,7 @@ export function handoffBudget(input: {
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly nativeContextEstimate: number;
   readonly modelContextWindow?: number | undefined;
+  readonly byteCap?: number | undefined;
 }): number {
   const usage = input.providerThread.contextUsage;
   const window = Math.min(
@@ -126,7 +129,7 @@ export function handoffBudget(input: {
     Math.min(
       input.tokenCap,
       // Cap imported history only; adapters own attachment transport limits.
-      HANDOFF_BYTE_CAP,
+      input.byteCap ?? HANDOFF_BYTE_CAP,
       window - native - current - workReserve,
     ),
   );

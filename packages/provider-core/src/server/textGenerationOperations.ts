@@ -42,6 +42,12 @@ export const investigationUnsupported = (operation: Operation, provider: string)
     detail: `${provider} cannot investigate a checkout read-only. Choose another review guide model, or source control writer model when none is set.`,
   });
 
+export const contextSummaryUnsupported = (provider: string) =>
+  new TextGenerationError({
+    operation: "generateContextSummary",
+    detail: `${provider} cannot write rolling context summaries. Choose a Claude model for compaction summaries.`,
+  });
+
 export type Runner = <S extends Schema.Top>(
   request: Request<S>,
 ) => Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]>;
@@ -201,5 +207,6 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
     generateThreadTitle,
     generateReviewGuide,
     generateTranscriptionPostProcessing,
+    generateContextSummary: () => Effect.fail(contextSummaryUnsupported(name)),
   } satisfies ProviderTextGeneration;
 }

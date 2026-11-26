@@ -28,6 +28,7 @@ import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
 import * as ProviderTurnStartService from "./ProviderTurnStartService.ts";
 import * as RuntimeRequestService from "./RuntimeRequestService.ts";
+import * as ThreadCompactionService from "./ThreadCompactionService.ts";
 import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -99,6 +100,7 @@ export const layerExecutor: Layer.Layer<
   | ProviderTurnStartService.ProviderTurnStartServiceV2
   | RuntimeRequestService.RuntimeRequestServiceV2
   | ThreadTitleRegenerationService.ThreadTitleRegenerationService
+  | ThreadCompactionService.ThreadCompactionService
   | ThreadManagementService.ThreadManagementService
   | ProjectionStore.ProjectionStoreV2
   | ServerSettings.ServerSettingsService
@@ -114,6 +116,7 @@ export const layerExecutor: Layer.Layer<
     const runtimeRequests = yield* RuntimeRequestService.RuntimeRequestServiceV2;
     const threadTitleRegeneration =
       yield* ThreadTitleRegenerationService.ThreadTitleRegenerationService;
+    const threadCompaction = yield* ThreadCompactionService.ThreadCompactionService;
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
     const settings = yield* ServerSettings.ServerSettingsService;
@@ -696,6 +699,11 @@ export const layerExecutor: Layer.Layer<
                     }),
                 ),
               );
+          case "thread-compress.summarize":
+            return threadCompaction.executeCompress({
+              threadId: effect.threadId,
+              runId: effect.request.runId,
+            });
           case "delegated-tasks.stop":
             return threads
               .stopDelegatedTasks({

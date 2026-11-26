@@ -6,6 +6,7 @@ import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAda
 import { ContextHandoffBudgetError } from "@t3tools/provider-core/server/failure";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { fitCompressHandoffText } from "./compressHandoff.ts";
 import {
   historyCost,
   renderHistory,
@@ -48,7 +49,9 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
     if (pending.length === 0 || (input.deferInline && input.inject === undefined))
       return { context: "", delivered: Effect.void, unsent: Effect.void, inlineHandoffs: [] };
     const budget = typeof input.budget === "number" ? input.budget : yield* input.budget;
-    let coverage = pending
+    const compressed = pending.filter((handoff) => handoff.compressedSummary === true);
+    const regular = pending.filter((handoff) => handoff.compressedSummary !== true);
+    let coverage = regular
       .map(
         (handoff) =>
           `Context handoff (${handoff.strategy === "fork_delta_summary" ? "merge_back / fork_delta_summary" : handoff.strategy}):\n${
@@ -57,9 +60,9 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
           }`,
       )
       .join("\n");
-    if (historyCost([], coverage) > Math.min(4_000, budget / 2)) {
-      const strategies = Array.from(new Set(pending.map((handoff) => handoff.strategy)));
-      coverage = `Context handoff (${strategies.join(", ")}). ${pending.length} handoff records; detailed coverage references omitted. Recover an omitted item only when the request needs it, with t3_thread_read({threadId:"${input.providerThread.appThreadId ?? pending[0]!.threadId}",view:"activity",itemId:"<omitted item ID>",maxCharsPerItem:4000}); continue long text with textOffset=nextTextOffset until null. Follow fork/handoff source references in activity. Items included below need no read.`;
+    if (regular.length > 0 && historyCost([], coverage) > Math.min(4_000, budget / 2)) {
+      const strategies = Array.from(new Set(regular.map((handoff) => handoff.strategy)));
+      coverage = `Context handoff (${strategies.join(", ")}). ${regular.length} handoff records; detailed coverage references omitted. Recover an omitted item only when the request needs it, with t3_thread_read({threadId:"${input.providerThread.appThreadId ?? pending[0]!.threadId}",view:"activity",itemId:"<omitted item ID>",maxCharsPerItem:4000}); continue long text with textOffset=nextTextOffset until null. Follow fork/handoff source references in activity. Items included below need no read.`;
     }
     const seen = new Set(input.alreadyDeliveredItemIds);
     const messages = pending
@@ -69,14 +72,27 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
         seen.add(message.itemId);
         return true;
       });
-    const oldContext = pending
+    const oldContext = regular
       .filter((handoff) => handoff.history === undefined)
       .map((handoff) => handoff.summaryText)
       .join("\n\n");
+    // A /compress summary is the session's only copy of its history, so it must fit: it degrades
+    // instead of failing, with room left for the coverage and the omitted-item list.
+    const compressedText =
+      compressed.length === 0
+        ? ""
+        : fitCompressHandoffText(
+            compressed.map((handoff) => handoff.summaryText).join("\n\n"),
+            budget -
+              historyCost([], coverage) -
+              512 -
+              (messages.length === 0 ? 0 : Math.ceil(budget / 8)),
+          );
+    const required = [compressedText, coverage].filter((part) => part !== "").join("\n");
     const fullCoverage =
-      oldContext && historyCost([], `${coverage}\n${oldContext}`) + 512 <= budget
-        ? `${coverage}\n${oldContext}`
-        : coverage;
+      oldContext && historyCost([], `${required}\n${oldContext}`) + 512 <= budget
+        ? `${required}\n${oldContext}`
+        : required;
     const selected = selectHistory({
       messages,
       coverage: fullCoverage,
@@ -84,7 +100,7 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       omittedItemIds: pending.flatMap((handoff) => handoff.history?.omittedItemIds ?? []),
       budget,
     });
-    if (historyCost(selected.messages, selected.context) > budget) {
+    if (historyCost(selected.messages, selected.context) > budget && compressed.length === 0) {
       if (input.deferInline)
         return { context: "", delivered: Effect.void, unsent: Effect.void, inlineHandoffs: [] };
       return yield* new ContextHandoffBudgetError();

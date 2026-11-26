@@ -98,6 +98,8 @@ export interface ThreadRunSummary {
    * instead of "Thinking".
    */
   readonly providerStartingLabel?: string;
+  /** A server-handled /compress run: `preparing` means summarizing, not workspace or provider setup. */
+  readonly compress?: true;
   /** `providerStartingLabel` as a `msg()` string; display sites resolve this one. */
   readonly providerStartingLabelMsg?: string;
   /** The starting provider, so clients can show its logo beside the label. */

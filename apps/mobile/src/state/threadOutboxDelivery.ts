@@ -83,6 +83,7 @@ import {
   type ThreadOutboxFailureAction,
 } from "./thread-outbox-model";
 import { environmentThreadShells, threadEnvironment, threadFamilies } from "./threads";
+import { orchestrationEnvironment } from "./orchestration";
 import {
   appendComposerDraftAttachments,
   composerDraftsAtom,
@@ -1001,6 +1002,15 @@ export function createThreadOutboxDelivery(): {
       if (compactionFailure?.action === "restore") {
         return yield* restoreQueuedMessage(persistedMessage, compactionFailure.message);
       }
+      if (!isQueuedMessagePayloadCurrent(persistedMessage, deliveryRevision)) return;
+    }
+    if (queuedMessage.compressBeforeSend === true) {
+      if (!hasAccess()) return;
+      // A refusal (no longer due, or already compressed before a retry) sends the message as is.
+      yield* deliveryCommand(orchestrationEnvironment.compressThread, {
+        environmentId: queuedMessage.environmentId,
+        input: { threadId: queuedMessage.threadId, trigger: "automatic", creationSource: "mobile" },
+      });
       if (!isQueuedMessagePayloadCurrent(persistedMessage, deliveryRevision)) return;
     }
     if (!hasAccess()) return;

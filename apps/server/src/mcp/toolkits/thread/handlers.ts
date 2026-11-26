@@ -6,6 +6,7 @@ import {
   type RunId,
   OrchestratorMcpFailure,
   type OrchestrationV2Command,
+  type OrchestrationV2CompressThreadError,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
@@ -20,6 +21,7 @@ import {
   readThread,
   unavailable,
 } from "../../threadAccess.ts";
+import * as ThreadCompaction from "../../../orchestration-v2/ThreadCompactionService.ts";
 import type * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
@@ -181,6 +183,23 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         Effect.gen(function* () {
           const sourcePoint = input.sourcePoint ?? { type: "latest_stable" as const };
           const { threads, projection } = yield* readThread(input.threadId);
+          if (input.action === "compress" || input.action === "undo_compress") {
+            const compaction = yield* ThreadCompaction.ThreadCompactionService;
+            const refused = (error: OrchestrationV2CompressThreadError) =>
+              new OrchestratorMcpFailure({
+                code: error.reason === undefined ? "orchestration_error" : "invalid_request",
+                message: error.message,
+              });
+            return input.action === "compress"
+              ? yield* compaction
+                  .compress(projection.thread.id, {
+                    focus: input.focus,
+                    createdBy: "agent",
+                    creationSource: "mcp",
+                  })
+                  .pipe(Effect.mapError(refused))
+              : yield* compaction.undoCompress(projection.thread.id).pipe(Effect.mapError(refused));
+          }
           const commandId = yield* newCommandId();
           if (input.action === "merge_back") {
             const targetThreadId = yield* required(input.targetThreadId, "targetThreadId");

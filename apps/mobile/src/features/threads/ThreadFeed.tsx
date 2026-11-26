@@ -413,6 +413,9 @@ export interface ThreadFeedProps {
   readonly skills?: ReadonlyArray<SelectableMarkdownSkill>;
   readonly onUseArtifactTemplate?: (template: CodexArtifactTemplate) => void;
   readonly onCiteAssistantText?: (citation: AssistantCitation) => void;
+  /** The /compress run Undo reverts; absent hides Undo. */
+  readonly compressUndoRunId?: RunId | null;
+  readonly onUndoCompress?: () => void;
 }
 
 const USER_MESSAGE_COPY_MENU_ACTIONS = [
@@ -1810,6 +1813,49 @@ function ThreadAutomationMessageRow(props: {
   );
 }
 
+/** A completed /compress: its read-only summary preview, and Undo until the new session starts. */
+function CompressedContextDivider(props: {
+  readonly summary: string | undefined;
+  readonly undoable: boolean;
+  readonly onUndo: (() => void) | undefined;
+  readonly children: ReactNode;
+}) {
+  const gt = useGT();
+  const [summaryOpen, setSummaryOpen] = useState(false);
+  if (props.summary === undefined && !props.undoable) return props.children;
+  return (
+    <View>
+      {props.children}
+      <View className="-mt-2 mb-3 flex-row items-center justify-center gap-4">
+        {props.summary !== undefined ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ expanded: summaryOpen }}
+            hitSlop={8}
+            onPress={() => setSummaryOpen((open) => !open)}
+          >
+            <Text className="font-t3-medium text-xs text-foreground-muted">
+              {summaryOpen ? gt("Hide summary") : gt("Show summary")}
+            </Text>
+          </Pressable>
+        ) : null}
+        {props.undoable ? (
+          <Pressable accessibilityRole="button" hitSlop={8} onPress={props.onUndo}>
+            <Text className="font-t3-medium text-xs text-foreground-muted">
+              {gt("Undo", { $context: "verb, reverts a context compress" })}
+            </Text>
+          </Pressable>
+        ) : null}
+      </View>
+      {summaryOpen && props.summary !== undefined ? (
+        <Text selectable className="mb-3 px-1 text-xs text-foreground-muted">
+          {props.summary}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
 /** Leads with why T3 Code compacted, when it did so without being asked. */
 function compactionLabel(
   label: string,
@@ -1964,6 +2010,8 @@ function renderFeedEntry(
     | "threadId"
     | "workspaceRoot"
     | "worktreeSetup"
+    | "compressUndoRunId"
+    | "onUndoCompress"
   > & {
     /** The fold row of the turn the worktree setup handed off to. */
     readonly setupFoldRowId: string | null;
@@ -2238,9 +2286,12 @@ function renderFeedEntry(
       entry.runId === props.unsettledTurnId &&
       item.status === "running";
     const labels = props.compactionLabelsByEntryId.get(entry.id);
+    const compress = item.type === "compaction" && item.method === "compress";
     const failure =
-      item.type === "compaction" && item.status === "failed" ? item.summary?.trim() : undefined;
-    return (
+      item.type === "compaction" && item.status === "failed" && !compress
+        ? item.summary?.trim()
+        : undefined;
+    const divider = (
       <ThreadContextDivider
         label={
           failure
@@ -2256,6 +2307,20 @@ function renderFeedEntry(
         active={active}
         failed={item.status === "failed"}
       />
+    );
+    if (!compress || item.status !== "completed") return divider;
+    return (
+      <CompressedContextDivider
+        summary={item.summary?.trim() || undefined}
+        undoable={
+          props.onUndoCompress !== undefined &&
+          entry.runId != null &&
+          props.compressUndoRunId === entry.runId
+        }
+        onUndo={props.onUndoCompress}
+      >
+        {divider}
+      </CompressedContextDivider>
     );
   }
 
@@ -3827,6 +3892,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     contentWidth,
     skills: props.skills,
     workflowOpening,
+    compressUndoRunId: props.compressUndoRunId,
   };
   const reportHeaderMaterialVisibility = (visible: boolean) => {
     if (headerMaterialVisibleRef.current === visible) {
@@ -4295,6 +4361,8 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             onEditPendingMessage: props.onEditPendingMessage,
             onUseArtifactTemplate: props.onUseArtifactTemplate,
             onCiteAssistantText: props.onCiteAssistantText,
+            compressUndoRunId: props.compressUndoRunId ?? null,
+            ...(props.onUndoCompress ? { onUndoCompress: props.onUndoCompress } : {}),
             threadId: props.threadId,
             copiedRowId,
             expandedWorkRows,

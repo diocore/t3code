@@ -68,6 +68,8 @@ import {
   ChevronRightIcon,
 } from "lucide-react";
 import { Skeleton } from "../ui/skeleton";
+import { Button } from "../ui/button";
+import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { ExpandedImagePreview } from "./ExpandedImagePreview";
 import {
   CHAT_TIMELINE_ANCHOR_OFFSET,
@@ -300,6 +302,8 @@ interface MessagesTimelineProps {
     readonly sourceThreadId: ThreadId;
     readonly runId: RunId;
   }) => Promise<void>;
+  compressUndoRunId?: RunId | null;
+  onUndoCompress?: () => void;
   supportsConversationRollback: boolean;
   threadStartCheckpointAvailable?: boolean;
   availableRevertTurnCounts?: ReadonlySet<number> | undefined;
@@ -404,6 +408,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
   parentThreadLink = null,
   workflowOpening = null,
   onForkFromRun,
+  compressUndoRunId = null,
+  onUndoCompress,
   supportsConversationRollback,
   threadStartCheckpointAvailable = false,
   availableRevertTurnCounts,
@@ -1149,6 +1155,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
     turnItemSource,
     workflowOpening,
     onForkFromRun,
+    compressUndoRunId,
+    onUndoCompress,
     onToggleTurnFold,
     onToggleAttemptFold,
     onToggleWorkGroup,
@@ -1783,7 +1791,13 @@ function ContextCompactionTimelineRow({
       )}
       {row.tokenCounts ? (
         <>
-          {row.title ? (
+          {row.compress ? (
+            <T>
+              Context compressed <Var>{row.tokenCounts.before}</Var>
+              <ArrowRightIcon aria-hidden="true" className="size-3" />
+              <Var>{row.tokenCounts.after}</Var> tokens
+            </T>
+          ) : row.title ? (
             <T>
               <Var>{row.title}</Var> <Var>{row.tokenCounts.before}</Var>
               <ArrowRightIcon aria-hidden="true" className="size-3" />
@@ -1806,7 +1820,7 @@ function ContextCompactionTimelineRow({
       ) : null}
     </span>
   );
-  return (
+  const separator = (
     <div
       role="separator"
       aria-label={row.failure ? `${label}: ${row.failure}` : label}
@@ -1825,6 +1839,49 @@ function ContextCompactionTimelineRow({
       </span>
       <span className={cn("h-px flex-1", row.failed ? "bg-destructive/30" : "bg-border/70")} />
     </div>
+  );
+  return row.compress?.completed ? (
+    <CompressDetails compress={row.compress}>{separator}</CompressDetails>
+  ) : (
+    separator
+  );
+}
+
+/** A completed /compress: its read-only summary preview, and Undo until the new session starts. */
+function CompressDetails({
+  compress,
+  children,
+}: {
+  compress: NonNullable<Extract<TimelineRow, { kind: "context-compaction" }>["compress"]>;
+  children: ReactNode;
+}) {
+  const gt = useGT();
+  const ctx = use(TimelineRowCtx);
+  const undoable = ctx.onUndoCompress !== undefined && ctx.compressUndoRunId === compress.runId;
+  if (compress.summary === undefined && !undoable) return children;
+  return (
+    <Collapsible className="mx-auto w-full max-w-(--chat-content-max-width)">
+      {children}
+      <div className="flex items-center justify-center gap-1">
+        {compress.summary !== undefined ? (
+          <CollapsibleTrigger render={<Button type="button" size="xs" variant="ghost-muted" />}>
+            {gt("Show summary")}
+          </CollapsibleTrigger>
+        ) : null}
+        {undoable ? (
+          <Button type="button" size="xs" variant="ghost-muted" onClick={ctx.onUndoCompress}>
+            {gt("Undo", { $context: "verb, reverts a context compress" })}
+          </Button>
+        ) : null}
+      </div>
+      {compress.summary !== undefined ? (
+        <CollapsiblePanel>
+          <p className="whitespace-pre-wrap break-words px-3 py-2 text-muted-foreground text-xs">
+            {compress.summary}
+          </p>
+        </CollapsiblePanel>
+      ) : null}
+    </Collapsible>
   );
 }
 

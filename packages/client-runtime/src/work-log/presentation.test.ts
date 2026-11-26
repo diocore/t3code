@@ -4,6 +4,8 @@ import { ThreadId, TurnItemId, type OrchestrationV2TurnItem } from "@t3tools/con
 import * as DateTime from "effect/DateTime";
 
 import {
+  contextCompactionLabel,
+  contextCompactionTokenCounts,
   resolveWorkEntryToolPresentation,
   toolItemForDisplay,
   type WorkLogPresentationEntry,
@@ -202,5 +204,41 @@ describe("resolveWorkEntryToolPresentation", () => {
         toolData: { server: "another-server", tool: "preview_click" },
       }),
     ).toBeNull();
+  });
+});
+
+describe("contextCompactionLabel", () => {
+  const compress = { method: "compress" as const, beforeTokenCount: 180_000 };
+
+  it("names each state of a /compress", () => {
+    expect(contextCompactionLabel({ ...compress, status: "running" })).toBe("Compressing context…");
+    expect(
+      contextCompactionLabel({ ...compress, status: "completed", afterTokenCount: 21_000 }),
+    ).toBe("Context compressed 180K → 21K tokens");
+    expect(contextCompactionLabel({ ...compress, status: "failed" })).toBe("Compress failed");
+    expect(
+      contextCompactionLabel({ ...compress, status: "cancelled", afterTokenCount: 21_000 }),
+    ).toBe("Compress undone");
+    expect(contextCompactionLabel({ ...compress, status: "cancelled" })).toBe("Compress stopped");
+  });
+
+  it("keeps native compaction's labels", () => {
+    expect(contextCompactionLabel({ status: "running" })).toBe("Compacting context");
+    expect(
+      contextCompactionLabel({
+        status: "completed",
+        beforeTokenCount: 180_000,
+        afterTokenCount: 21_000,
+      }),
+    ).toBe("Context compacted 180K → 21K tokens");
+  });
+
+  it("shows token counts only for a completed /compress", () => {
+    expect(
+      contextCompactionTokenCounts({ ...compress, status: "cancelled", afterTokenCount: 21_000 }),
+    ).toBeNull();
+    expect(
+      contextCompactionTokenCounts({ ...compress, status: "completed", afterTokenCount: 21_000 }),
+    ).toEqual({ before: "180K", after: "21K" });
   });
 });

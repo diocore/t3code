@@ -174,8 +174,9 @@ function summarizeThreadRun(
       )?.id ?? null,
     // A run counts as running before its provider opens; until a turn appears,
     // the provider can still be launching for minutes.
+    ...(run.compress ? { compress: true } : {}),
     ...(turnStatus === undefined
-      ? PROVIDER_STARTING_RUN_STATUSES.has(run.status)
+      ? PROVIDER_STARTING_RUN_STATUSES.has(run.status) && !run.compress
         ? providerStarting(projection, run)
         : {}
       : turnStatus === "pending" || turnStatus === "running"
@@ -467,7 +468,9 @@ export function deriveThreadStructureRuntime(
       ? "failed"
       : backgroundWorkHoldsRun && latestRunProjection?.status !== "failed"
         ? "idle"
-        : (activityRun?.status ?? "idle"),
+        : activityRun?.compress && activityRun.status === "preparing"
+          ? "running"
+          : (activityRun?.status ?? "idle"),
     activeRunId,
     activityStartedAt:
       liveActivityRun === null

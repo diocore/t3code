@@ -14,7 +14,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
-import { compactBeforeSendTokens } from "./contextWindow.ts";
+import { compactBeforeSendTokens, compressBeforeSend } from "./contextWindow.ts";
 import type { ThreadStructure } from "./models.ts";
 import { v2Projection } from "./orchestrationV2TestFixtures.ts";
 
@@ -260,5 +260,62 @@ describe("compactBeforeSendTokens", () => {
     expect(compactBeforeSendTokens(sendInput(overrides as Parameters<typeof sendInput>[0]))).toBe(
       expected ? 293_611 : null,
     );
+  });
+});
+
+describe("compressBeforeSend", () => {
+  const providerThreadId = ProviderThreadId.make("provider-thread-claude");
+  const input = (
+    overrides: {
+      readonly autoCompress?: boolean;
+      readonly instanceId?: string;
+      readonly usedTokens?: number;
+      readonly idleMinutes?: number;
+      readonly text?: string;
+      readonly threadIdle?: boolean;
+    } = {},
+  ) => {
+    const completedAt = DateTime.makeUnsafe("2026-11-26T10:00:00.000Z");
+    return {
+      projection: {
+        thread: {
+          providerInstanceId: overrides.instanceId ?? "claudeAgent",
+          activeProviderThreadId: providerThreadId,
+          lineage: { relationshipToParent: null },
+        },
+        providerTurns: [
+          {
+            providerThreadId,
+            tokenUsage: {
+              usedTokens: overrides.usedTokens ?? 250_000,
+              maxTokens: 1_000_000,
+              updatedAt: DateTime.formatIso(completedAt),
+            },
+          },
+        ],
+        runs: [{ ordinal: 1, status: "completed", completedAt }],
+      } as never,
+      settings: {
+        ...DEFAULT_SERVER_SETTINGS,
+        autoCompress: overrides.autoCompress ?? true,
+        providerInstances: { cursor: { driver: ProviderDriverKind.make("cursor") } } as never,
+      },
+      text: overrides.text ?? "back again",
+      threadIdle: overrides.threadIdle ?? true,
+      now: DateTime.formatIso(DateTime.add(completedAt, { minutes: overrides.idleMinutes ?? 45 })),
+    };
+  };
+
+  it.each([
+    ["an idle large Claude thread", {}, true],
+    ["auto-compress off", { autoCompress: false }, false],
+    ["a Cursor thread", { instanceId: "cursor" }, false],
+    ["idle under compressIdleMinutes", { idleMinutes: 10 }, false],
+    ["under 200K tokens", { usedTokens: 150_000 }, false],
+    ["a slash command", { text: "/compact" }, false],
+    ["/compress itself", { text: "/compress keep auth" }, false],
+    ["a running thread", { threadIdle: false }, false],
+  ] as const)("%s → %s", (_name, overrides, expected) => {
+    expect(compressBeforeSend(input(overrides))).toBe(expected);
   });
 });

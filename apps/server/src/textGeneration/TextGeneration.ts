@@ -47,7 +47,8 @@ type TextGenerationOp =
   | "generateBranchName"
   | "generateThreadTitle"
   | "generateReviewGuide"
-  | "generateTranscriptionPostProcessing";
+  | "generateTranscriptionPostProcessing"
+  | "generateContextSummary";
 
 const resolveInstance = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
@@ -115,7 +116,11 @@ export const make = Effect.gen(function* () {
             ?.supportsTextGeneration === false ||
           (selected.status === "error" &&
             (!selected.installed || selected.auth.status === "unauthenticated"))));
-    if (unusable || exhaustedUsageWindow(selected, now, selection.model)) {
+    // A rolling summary is budgeted for its own model; another one would not keep the budget.
+    if (
+      operation !== "generateContextSummary" &&
+      (unusable || exhaustedUsageWindow(selected, now, selection.model))
+    ) {
       const settings = yield* serverSettings.getSettings.pipe(
         Effect.mapError(
           (cause) =>
@@ -215,6 +220,14 @@ export const make = Effect.gen(function* () {
         null,
         (service, modelSelection) =>
           service.generateTranscriptionPostProcessing({ ...input, modelSelection }),
+      );
+    }),
+    generateContextSummary: Effect.fn("TextGeneration.generateContextSummary")(function (input) {
+      return generate(
+        "generateContextSummary",
+        input.modelSelection,
+        null,
+        (service, modelSelection) => service.generateContextSummary({ ...input, modelSelection }),
       );
     }),
     generateThreadTitle: Effect.fn("TextGeneration.generateThreadTitle")(function (input) {
