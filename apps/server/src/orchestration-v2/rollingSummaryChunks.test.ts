@@ -77,17 +77,17 @@ describe("calibrateCharsPerToken", () => {
     const dense = calibrateCharsPerToken(INITIAL_CHARS_PER_TOKEN, {
       promptChars: 120_000,
       promptTokens: 2 * (7_500 + 100_000),
-      turns: 2,
+      requests: 2,
     });
     expect(dense).toBeCloseTo(1.2);
     expect(
-      calibrateCharsPerToken(dense, { promptChars: 190_000, promptTokens: 107_500, turns: 1 }),
+      calibrateCharsPerToken(dense, { promptChars: 190_000, promptTokens: 107_500, requests: 1 }),
     ).toBe(dense);
     expect(
       calibrateCharsPerToken(INITIAL_CHARS_PER_TOKEN, {
         promptChars: 190_000,
         promptTokens: 107_500,
-        turns: 1,
+        requests: 1,
       }),
     ).toBe(INITIAL_CHARS_PER_TOKEN);
   });

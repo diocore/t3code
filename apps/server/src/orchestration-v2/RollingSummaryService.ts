@@ -41,6 +41,7 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import { cancelledBeforeStart } from "./RestartBackgroundNote.ts";
 import {
   calibrateCharsPerToken,
+  summaryRequestCount,
   INITIAL_CHARS_PER_TOKEN,
   type PendingRun,
   planSummaryChunks,
@@ -313,7 +314,18 @@ const make = Effect.gen(function* () {
         lastRunOrdinal: chunk.lastRunOrdinal,
       };
       const result = yield* textGeneration.generateContextSummary({ ...request, modelSelection });
-      const perRequestTokens = result.usage.promptTokens / Math.max(1, result.usage.turns);
+      const requests = summaryRequestCount(result.usage.turns);
+      const perRequestTokens = result.usage.promptTokens / requests;
+      yield* Effect.logInfo("rolling summary chunk", {
+        threadId,
+        firstRunOrdinal: chunk.firstRunOrdinal,
+        lastRunOrdinal: chunk.lastRunOrdinal,
+        turns: result.usage.turns,
+        requests,
+        promptTokens: result.usage.promptTokens,
+        outputTokens: result.usage.outputTokens,
+        charsPerToken,
+      });
       if (perRequestTokens > PROMPT_WARNING_TOKENS)
         yield* Effect.logWarning("rolling summary request exceeded its prompt budget", {
           threadId,
@@ -323,7 +335,7 @@ const make = Effect.gen(function* () {
       charsPerToken = calibrateCharsPerToken(charsPerToken, {
         promptChars: buildContextSummaryPrompt(request).length,
         promptTokens: result.usage.promptTokens,
-        turns: result.usage.turns,
+        requests,
       });
       summary = result.sections;
       usage = {
