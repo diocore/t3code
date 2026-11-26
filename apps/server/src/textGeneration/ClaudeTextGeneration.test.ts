@@ -263,6 +263,58 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
     ),
   );
 
+  it.effect("writes context summaries without settings sources or the default system prompt", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({
+          structured_output: {
+            goal: "Ship the consumer fix",
+            userRequests: [],
+            decisions: [],
+            constraints: [],
+            filesTouched: [],
+            openTodos: [],
+            currentState: "Tests pass",
+            unresolvedErrors: [],
+          },
+        }),
+        argsMustContain:
+          "--setting-sources  --system-prompt You summarize a coding-agent session into the requested JSON structure. Follow the instructions in the user message exactly.",
+      },
+      (textGeneration) =>
+        textGeneration.generateContextSummary({
+          priorSummary: null,
+          transcript: "=== RUN 4 ===\n[USER]\nfix it",
+          firstRunOrdinal: 4,
+          lastRunOrdinal: 7,
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("claudeAgent"),
+            model: SYNTHETIC_CLAUDE_CAPABLE_MODEL,
+          },
+        }),
+    ),
+  );
+
+  it.effect.each(["--setting-sources", "--system-prompt"])(
+    "generates thread titles without %s",
+    (flag) =>
+      withFakeClaudeEnv(
+        {
+          output: JSON.stringify({ structured_output: { title: "Reconnect failures" } }),
+          argsMustNotContain: flag,
+        },
+        (textGeneration) =>
+          textGeneration.generateThreadTitle({
+            cwd: process.cwd(),
+            message: "Investigate reconnect failures",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("claudeAgent"),
+              model: SYNTHETIC_CLAUDE_STANDARD_MODEL,
+            },
+          }),
+      ),
+  );
+
   it.effect("sends thread title instructions to the provider prompt", () =>
     withFakeClaudeEnv(
       {

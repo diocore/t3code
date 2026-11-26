@@ -1536,14 +1536,24 @@ function conversationProviderThread(
 }
 
 /** The session's smallest context: the system prompt and tools a fresh session starts with again. */
-function sessionBaselineTokens(
-  projection: Pick<OrchestrationV2ThreadProjection, "providerTurns">,
-  providerThreadId: OrchestrationV2ProviderThread["id"],
+export function sessionBaselineTokens(
+  projection: Pick<OrchestrationV2ThreadProjection, "thread" | "providerThreads" | "providerTurns">,
+  replacedProviderThread: Pick<OrchestrationV2ProviderThread, "providerInstanceId">,
 ): number {
+  const conversationProviderThreadIds = new Set(
+    projection.providerThreads
+      .filter(
+        (candidate) =>
+          candidate.appThreadId === projection.thread.id &&
+          candidate.ownerNodeId === null &&
+          candidate.providerInstanceId === replacedProviderThread.providerInstanceId,
+      )
+      .map((candidate) => candidate.id),
+  );
   const usedTokens = projection.providerTurns.flatMap((turn) =>
-    turn.providerThreadId === providerThreadId && turn.tokenUsage !== undefined
-      ? [turn.tokenUsage.usedTokens]
-      : [],
+    turn.tokenUsage === undefined || !conversationProviderThreadIds.has(turn.providerThreadId)
+      ? []
+      : [turn.tokenUsage.usedTokens],
   );
   return usedTokens.length === 0 ? 0 : Math.min(...usedTokens);
 }
@@ -13391,7 +13401,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         providerThreadId: freshProviderThreadId,
         status: "completed",
         afterTokenCount:
-          command.afterTokenCount + sessionBaselineTokens(projection, providerThread.id),
+          command.afterTokenCount + sessionBaselineTokens(projection, providerThread),
         ...(command.summaryPreview === "" ? {} : { summary: command.summaryPreview }),
         completedAt: now,
         updatedAt: now,
