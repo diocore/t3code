@@ -272,13 +272,33 @@ describe("Antigravity Plan", () => {
     }
   });
 
-  it.each(runtimeModes)("asks before commands and other actions in %s", (runtimeMode) => {
-    for (const kind of ["execute", "fetch", "other"] as const) {
+  it.each([
+    { runtimeMode: "full-access", expected: "allow" },
+    { runtimeMode: "auto", expected: "allow" },
+    { runtimeMode: "auto-accept-edits", expected: "ask" },
+    { runtimeMode: "approval-required", expected: "ask" },
+  ] as const)(
+    "answers commands and other actions as the mode does in $runtimeMode",
+    ({ runtimeMode, expected }) => {
+      for (const kind of ["execute", "fetch", "other"] as const) {
+        expect(
+          antigravityPermissionDisposition(
+            { runtimeMode, interactionMode: "plan", cwd: "/workspace" },
+            request(kind),
+          ),
+        ).toBe(expected);
+      }
+    },
+  );
+
+  it("allows reads in Auto, which Default still asks about", () => {
+    const policy = { runtimeMode: "auto", cwd: "/workspace" } as const;
+    for (const kind of ["read", "search", "think"] as const) {
       expect(
-        antigravityPermissionDisposition(
-          { runtimeMode, interactionMode: "plan", cwd: "/workspace" },
-          request(kind),
-        ),
+        antigravityPermissionDisposition({ ...policy, interactionMode: "plan" }, request(kind)),
+      ).toBe("allow");
+      expect(
+        antigravityPermissionDisposition({ ...policy, interactionMode: "default" }, request(kind)),
       ).toBe("ask");
     }
   });
@@ -297,19 +317,30 @@ describe("Antigravity Plan", () => {
     ).toBe("deny");
   });
 
-  it.each(runtimeModes)("answers reads and T3 MCP calls as outside Plan in %s", (runtimeMode) => {
-    for (const call of [
-      request("read"),
-      request("search"),
-      request("think"),
-      request("execute", { ServerName: "t3-code", ToolName: "t3_thread_read" }),
-    ]) {
-      const policy = { runtimeMode, cwd: "/workspace" };
-      expect(antigravityPermissionDisposition({ ...policy, interactionMode: "plan" }, call)).toBe(
-        antigravityPermissionDisposition({ ...policy, interactionMode: "default" }, call),
-      );
-    }
+  it.each(runtimeModes)("answers T3 MCP calls as outside Plan in %s", (runtimeMode) => {
+    const call = request("execute", { ServerName: "t3-code", ToolName: "t3_thread_read" });
+    const policy = { runtimeMode, cwd: "/workspace" };
+    expect(antigravityPermissionDisposition({ ...policy, interactionMode: "plan" }, call)).toBe(
+      antigravityPermissionDisposition({ ...policy, interactionMode: "default" }, call),
+    );
   });
+
+  it.each(["full-access", "auto-accept-edits", "approval-required"] as const)(
+    "answers reads as outside Plan in %s",
+    (runtimeMode) => {
+      const policy = { runtimeMode, cwd: "/workspace" };
+      for (const kind of ["read", "search", "think"] as const) {
+        expect(
+          antigravityPermissionDisposition({ ...policy, interactionMode: "plan" }, request(kind)),
+        ).toBe(
+          antigravityPermissionDisposition(
+            { ...policy, interactionMode: "default" },
+            request(kind),
+          ),
+        );
+      }
+    },
+  );
 
   it("leaves Default unchanged", () => {
     for (const kind of ["edit", "execute"] as const) {

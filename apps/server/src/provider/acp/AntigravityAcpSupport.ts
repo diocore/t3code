@@ -224,16 +224,14 @@ export function antigravityPermissionDisposition(
 ) {
   const disposition = acpPermissionDisposition(policy, request);
   if (disposition === "deny") return "deny";
-  // agy's Plan mode still edits and runs commands once told to proceed; keep Plan read-only.
+  // agy's Plan mode still edits once told to proceed; deny file mutations, leave the rest to the mode.
   const kind = request.toolCall.kind ?? "other";
-  if (
-    policy.interactionMode === "plan" &&
-    !ANTIGRAVITY_READ_KINDS.has(kind) &&
-    !isAntigravityT3McpRequest(request)
-  ) {
-    return ANTIGRAVITY_MUTATION_KINDS.has(kind) || policy.approvalPolicy === "never"
-      ? "deny"
-      : "ask";
+  if (policy.interactionMode === "plan" && !isAntigravityT3McpRequest(request)) {
+    const isRead = ANTIGRAVITY_READ_KINDS.has(kind);
+    if (ANTIGRAVITY_MUTATION_KINDS.has(kind) || (!isRead && policy.approvalPolicy === "never")) {
+      return "deny";
+    }
+    return disposition;
   }
   // T3 authorizes its own MCP server, so Auto and Auto-accept edits run it unasked, as Claude does.
   if (
